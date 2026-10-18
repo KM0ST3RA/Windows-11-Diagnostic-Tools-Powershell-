@@ -9,3 +9,50 @@ et d'appliquer des actions correctives pour garantir la stabilité et la réacti
 Multilingues : FR - ENG - DE - IT - ES
 
 Developpement : Powershell, IA Gemini, IA Vibe.
+
+==========================================================================================
+
+Présentation de Windows 11 Diagnostic Tools
+Windows 11 Diagnostic Tools est un utilitaire centralisé de diagnostic, de maintenance et d’optimisation spécialement conçu pour l'environnement Windows 11. Il regroupe en une interface unique l'accès aux fonctionnalités natives du système ainsi que des modules d'analyse personnalisés, permettant d'identifier rapidement les dysfonctionnements, de surveiller la santé du matériel et d'optimiser les performances globales.
+
+
+Fonctionnalités et modules principaux
+> Nécessite les privilèges Administrateur pour certains outils
+
+Cas d'usage principaux
+Résolution de pannes : Identifier rapidement la cause d'un ralentissement, d'un écran bleu ou d'une perte de connexion.
+
+Maintenance préventive : Effectuer des contrôles réguliers pour anticiper les défaillances de stockage ou de mémoire.
+
+Gain de temps : Éviter de chercher les différentes commandes et consoles cachées dans Windows 11 en les regroupant dans un tableau de bord intuitif.
+
+1. Diagnostic Santé & Performances Matérielles
+* Analyse du processeur et de la mémoire : Surveillance en temps réel de l'utilisation du CPU et de la mémoire RAM avec détection des processus consommateurs.
+
+* Vérification des disques (HDD/SSD) : Analyse de l'état de santé des disques (S.M.A.R.T.), contrôle de l'espace de stockage et détection des secteurs défectueux.
+
+* Gestion de l'alimentation & Batterie : Rapport détaillé sur la santé de la batterie (pour les PC portables) et analyse des modes de gestion d'énergie.
+
+2. Dépannage Réseau & Connectivité
+* Test de connectivité : Diagnostic rapide des cartes réseau (Wi-Fi et Ethernet) et vérification de la résolution DNS.
+
+* Réinitialisation des empilements réseau : Outil en un clic pour vider le cache DNS et réinitialiser la configuration IP/Winsock en cas de perte d'accès Internet.
+
+3. Maintenance & Intégrité du Système
+* Vérification des fichiers système (SFC / DISM) : Lancement automatisé des analyses sfc /scannow et des commandes d'image DISM pour réparer les fichiers système corrompus.
+
+* Nettoyage du système : Suppression des fichiers temporaires, caches d'applications et résidus de mises à jour pour libérer de l'espace disque.
+
+* Gestion des services & Démarrage : Analyse des applications lancées au démarrage de Windows pour accélérer le temps de boot.
+
+4. Intégration des Outils Natives Windows
+L'application sert également de panneau de contrôle rapide vers les utilitaires avancés de Windows 11 :
+
+* Observateur d'événements (Event Viewer) : Accès direct aux journaux d'erreurs système et applications.
+
+* Moniteur de ressources & Gestionnaire de tâches : Inspection détaillée des flux de données et des processus en cours.
+
+* Outil de diagnostic de la mémoire Windows (mdsched) : Planification de tests approfondis de la RAM.
+
+* Informations système (msinfo32) : Vue d'ensemble matérielle et logicielle complète du poste.
+
