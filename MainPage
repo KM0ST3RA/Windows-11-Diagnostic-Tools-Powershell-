@@ -1,0 +1,996 @@
+# ==============================================================================
+# Script : Hub d'Outils de Diagnostic & Réparation Système Windows Multi-langues
+# Version : 0.15.0
+#  - Nouvel onglet "Réseau & Internet" (Winsock + TCP/IP + FlushDns + NetConn)
+#  - Onglet "Nettoyage" réduit à 3 boutons
+#  - Onglet "Avancés" réduit à 6 boutons
+#  - Traductions noms d'onglets mises à jour (FR/EN/DE/IT/ES)
+# Créé avec l'aide des IA Google Gemini et Mistral Vibe
+# Exécution : Nécessite les privilèges Administrateur pour certains outils
+# ==============================================================================
+
+# ======================================================================
+# INITIALISATION DU SCRIPT
+# ======================================================================
+
+# ÉTAPE A : Charger obligatoirement les outils graphiques en PREMIER
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+
+# Activer les styles visuels AVANT toute création de formulaire (rendu cohérent)
+[System.Windows.Forms.Application]::EnableVisualStyles()
+
+# Commande standard pour redimensionner proprement toutes les consoles
+# NOTE : chaîne single-quote pour éviter l'interprétation des variables $H
+$ConsoleSetup = '$H=(Get-Host).UI.RawUI;$H.WindowSize=New-Object System.Management.Automation.Host.Size(80,25);$H.BufferSize=New-Object System.Management.Automation.Host.Size(80,1000);'
+
+# Appliquer la taille compacte à la 1re fenêtre courante
+try {
+    $H = (Get-Host).UI.RawUI
+    $H.WindowSize = New-Object System.Management.Automation.Host.Size(80, 25)
+    $H.BufferSize = New-Object System.Management.Automation.Host.Size(80, 1000)
+} catch {}
+
+# ----------------------------------------------------------------------
+# 1. Choix du Mode d'Exécution (Boîte Personnalisée ADMIN / USER)
+# ----------------------------------------------------------------------
+$IsAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+if (-not $IsAdmin) {
+    $ChoiceForm = New-Object System.Windows.Forms.Form
+    $ChoiceForm.Text = "Launch Mode"
+    $ChoiceForm.Size = New-Object System.Drawing.Size(420, 180)
+    $ChoiceForm.StartPosition = "CenterScreen"
+    $ChoiceForm.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+    $ChoiceForm.MaximizeBox = $false
+    $ChoiceForm.MinimizeBox = $false
+    $ChoiceForm.BackColor = [System.Drawing.Color]::FromArgb(243, 243, 243)
+
+    $Label = New-Object System.Windows.Forms.Label
+    $Label.Text = "Choose your execution mode :`r`n"
+    $Label.Location = New-Object System.Drawing.Point(20, 20)
+    $Label.Size = New-Object System.Drawing.Size(380, 40)
+    $Label.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+    $Label.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
+    $ChoiceForm.Controls.Add($Label)
+
+    $Script:UserDecision = "Exit"
+
+    $BtnChoiceAdmin = New-Object System.Windows.Forms.Button
+    $BtnChoiceAdmin.Text = "ADMIN"
+    $BtnChoiceAdmin.Location = New-Object System.Drawing.Point(40, 80)
+    $BtnChoiceAdmin.Size = New-Object System.Drawing.Size(150, 40)
+    $BtnChoiceAdmin.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+    $BtnChoiceAdmin.BackColor = [System.Drawing.Color]::FromArgb(220, 53, 69)
+    $BtnChoiceAdmin.ForeColor = [System.Drawing.Color]::White
+    $BtnChoiceAdmin.FlatStyle = "Flat"
+    $BtnChoiceAdmin.FlatAppearance.BorderSize = 0
+    $BtnChoiceAdmin.Add_Click({ $Script:UserDecision = "Admin"; $ChoiceForm.Close() })
+    $ChoiceForm.Controls.Add($BtnChoiceAdmin)
+
+    $BtnChoiceUser = New-Object System.Windows.Forms.Button
+    $BtnChoiceUser.Text = "USER"
+    $BtnChoiceUser.Location = New-Object System.Drawing.Point(210, 80)
+    $BtnChoiceUser.Size = New-Object System.Drawing.Size(150, 40)
+    $BtnChoiceUser.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+    $BtnChoiceUser.BackColor = [System.Drawing.Color]::FromArgb(40, 167, 69)
+    $BtnChoiceUser.ForeColor = [System.Drawing.Color]::White
+    $BtnChoiceUser.FlatStyle = "Flat"
+    $BtnChoiceUser.FlatAppearance.BorderSize = 0
+    $BtnChoiceUser.Add_Click({ $Script:UserDecision = "User"; $ChoiceForm.Close() })
+    $ChoiceForm.Controls.Add($BtnChoiceUser)
+
+    [void]$ChoiceForm.ShowDialog()
+
+    if ($Script:UserDecision -eq "Admin") {
+        $ResizeScript = {
+            $H = (Get-Host).UI.RawUI
+            $H.WindowSize = New-Object System.Management.Automation.Host.Size(80,25)
+            $H.BufferSize = New-Object System.Management.Automation.Host.Size(80,1000)
+        }.ToString()
+
+        $EncodedCommand = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes("$ResizeScript; & '$PSCommandPath'"))
+        # v0.14 : gestion de l'annulation UAC (refus d'élévation) au lieu d'un Exit silencieux
+        try {
+            Start-Process powershell -ArgumentList "-NoProfile -ExecutionPolicy Bypass -EncodedCommand $EncodedCommand" -Verb RunAs -ErrorAction Stop
+        } catch {
+            [System.Windows.Forms.MessageBox]::Show("Elevation refused / Élevation refusée.", "Launch Mode", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+        }
+        Exit
+    }
+    elseif ($Script:UserDecision -eq "Exit") {
+        Exit
+    }
+}
+
+# ----------------------------------------------------------------------
+# Dictionnaire des traductions (Centralisation FR / EN / DE / IT / ES)
+# v0.14 : nouveau MemDiagHint, BtnServices, BtnCompMgmt, BtnChkdsk
+#         + Msg associées ; AboutBody IT corrigé
+# ----------------------------------------------------------------------
+$Translations = @{
+    FR = @{
+        Title        = "Hub de Maintenance Windows"
+        Header       = "Hub de Maintenance Windows"
+        TabSystem    = "Système & Réparation"
+        TabClean     = "Nettoyage & Optimisation"
+        TabDiag      = "Matériel & Diagnostics"
+        TabPerf      = "Performances & Journaux"
+        TabNet       = "Réseau & Internet"
+        TabAdv       = "Outils Avancés"
+        BtnScan      = "DISM ScanHealth"
+        BtnRestore   = "DISM RestoreHealth"
+        BtnSfc       = "SFC Scannow"
+        BtnSysRestore= "Protection du système (Restauration)"
+        BtnChkdsk    = "Vérification disque (CHKDSK)"
+        BtnCleanMgr  = "Nettoyage de Disque (Cleanmgr)"
+        BtnWinClean  = "Nettoyage Composants (WinSxS)"
+        BtnOptDrive  = "Optimiseur de lecteur (TRIM/Défrag)"
+        BtnWinsock   = "Réinitialiser Winsock (Service SENS)"
+        BtnIpReset   = "Réinitialiser la pile TCP/IP"
+        BtnFlushDns  = "Vider le cache DNS"
+        BtnSysInfo   = "Informations Système (Msinfo32)"
+        BtnDevMgr    = "Gestionnaire de périphériques"
+        BtnDiskMgr   = "Gestionnaire de disques"
+        BtnDxDiag    = "Diagnostic DirectX (DxDiag)"
+        BtnMemDiag   = "Diagnostic Mémoire RAM"
+        MemDiagHint  = "(avec redémarrage)"
+        BtnEventVwr  = "Observateur d'événements"
+        BtnResMon    = "Moniteur de ressources"
+        BtnPerfDiag  = "Diagnostic de Performance"
+        BtnReliability= "Moniteur de Fiabilité"
+        BtnMsConfig  = "Configuration du Système (Msconfig)"
+        BtnFirewall  = "Pare-feu Windows Avancé"
+        BtnNetConn   = "Connexions Réseau (ncpa.cpl)"
+        BtnMRT       = "Outil de Suppression Malwares (MRT)"
+        BtnUserPass  = "Gestion des Comptes (Netplwiz)"
+        BtnPower     = "Options d'Alimentation"
+        BtnServices  = "Services (services.msc)"
+        BtnCompMgmt  = "Gestion de l'ordinateur (compmgmt)"
+        BtnSfcLog    = "📄 Voir les détails du rapport SFC"
+        ConfTitle    = "Confirmation"
+        MsgSfc       = "SFC Scannow vérifie l'intégrité de tous les fichiers système protégés.`n`nVoulez-vous lancer la vérification dans une console ?"
+        MsgScan      = "Ce diagnostic vérifie l'image système sans la modifier.`n`nVoulez-vous lancer l'analyse dans une console ?"
+        MsgRestore   = "Répare automatiquement les fichiers système corrompus.`n`nVoulez-vous lancer la réparation dans une console ?"
+        MsgSysRestore= "Ouvre l'interface de Windows pour gérer et créer des points de restauration.`n`nOuvrir la Protection du système ?"
+        MsgChkdsk    = "Vérifie l'intégrité du système de fichiers du disque système (C:).`n⚠️ Une analyse au redémarrage sera proposée si le disque est en usage.`n`nLancer CHKDSK dans une console ?"
+        MsgCleanMgr  = "Ouvre l'outil natif de nettoyage de disque Windows.`n`nContinuer ?"
+        MsgWinClean  = "Nettoie en profondeur le dossier 'WinSxS'.`n⚠️ Vous ne pourrez plus désinstaller les dernières mises à jour.`n`nContinuer ?"
+        MsgOptDrive  = "Ouvre l'outil natif pour vérifier l'état du TRIM (SSD) et défragmenter vos disques.`n`nOuvrir l'Optimiseur de lecteur ?"
+        MsgWinsock   = "Répare le catalogue Winsock (utile si le service SENS ou le réseau bloque).`n⚠️ Un redémarrage du PC sera nécessaire.`n`nExécuter la réinitialisation ?"
+        MsgIpReset   = "Réinitialise le protocole TCP/IP à son état par défaut.`n⚠️ Peut effacer vos configurations d'IP fixe.`n⚠️ Un redémarrage du PC sera nécessaire.`n`nExécuter la réinitialisation ?"
+        MsgFlushDns  = "Vide le cache de résolution DNS local.`n⚡ Aucun redémarrage requis.`n`nExécuter le vidage ?"
+        MsgSysInfo   = "Affiche des informations détaillées sur votre matériel et BIOS.`n`nOuvrir Msinfo32 ?"
+        MsgDevMgr    = "Ouvre le Gestionnaire de périphériques pour vérifier vos pilotes.`n`nContinuer ?"
+        MsgDiskMgr   = "Ouvre le Gestionnaire de disques pour vérifier vos partitions.`n`nContinuer ?"
+        MsgDxDiag    = "Analyse les composants graphiques, audio et pilotes DirectX.`n`nLancer DxDiag ?"
+        MsgMemDiag   = "Vérifie les défauts physiques de la RAM (nécessite un redémarrage).`n`nOuvrir l'outil de diagnostic ?"
+        MsgEventVwr  = "Ouvre l'Observateur d'événements pour consulter les journaux système (crash, erreurs SFC, etc.).`n`nContinuer ?"
+        MsgResMon    = "Ouvre le Moniteur de ressources (CPU, RAM, Disque, Réseau en temps réel).`n`nOuvrir l'outil ?"
+        MsgPerfDiag  = "Génère un rapport de performance de 60 secondes en arrière-plan.`n`nLancer l'analyse ?"
+        MsgReliability= "Affiche l'historique de stabilité de votre système.`n`nOuvrir le Moniteur de fiabilité ?"
+        MsgMsConfig  = "Ouvre Msconfig pour configurer le démarrage.`n`nOuvrir l'outil ?"
+        MsgFirewall  = "Ouvre la sécurité avancée du Pare-feu Windows.`n`nOuvrir le Pare-feu ?"
+        MsgNetConn   = "Ouvre le panneau classique des cartes et connexions réseau.`n`nContinuer ?"
+        MsgMRT       = "Lance l'outil d'analyse et de suppression des logiciels malveillants de Windows.`n`nLancer MRT ?"
+        MsgUserPass  = "Ouvre le gestionnaire avancé des comptes utilisateurs et mots de passe.`n`nContinuer ?"
+        MsgPower     = "Ouvre le panneau classique de configuration des modes de gestion de l'alimentation.`n`nContinuer ?"
+        MsgServices  = "Ouvre la console des Services Windows (démarrage/arrêt des services).`n`nContinuer ?"
+        MsgCompMgmt  = "Ouvre la console Gestion de l'ordinateur (disques, périphériques, événements, dossiers partagés).`n`nContinuer ?"
+        LogStart     = "[DÉBUT] Lancement de l'outil natif..."
+        LogEnd       = "[FIN] Processus terminé ou interface fermée."
+        SfcExtracted = "[INFO] Des détails SFC ont été extraits dans %LOGPATH%."
+        SfcEmpty     = "[INFO] Aucun détail SFC à extraire (fichier vide ou absent)."
+        SfcRunning   = "[INFO] SFC lancé en arrière-plan. Le rapport sera détecté à la fin."
+        ToolNotFound = "[ERREUR] Impossible de lancer l'outil : %TOOL% introuvable ou inaccessible."
+        AboutTitle   = "À propos"
+        AboutBody    = "Windows Maintenance Hub`r`nTous les outils de ce hub sont nativement intégrés à Windows.`r`n`r`nVersion 0.15.0`r`n`r`nOpen Source`r`nCréé avec l'aide de Google Gemini & Mistral Vibe.`r`nOS : Windows 10 & 11.`r`n2026/08"
+    }
+    EN = @{
+        Title        = "Windows Maintenance Hub"
+        Header       = "Windows Maintenance Hub"
+        TabSystem    = "System & Repair"
+        TabClean     = "Cleanup & Optimization"
+        TabDiag      = "Hardware & Diagnostics"
+        TabPerf      = "Performance & Logs"
+        TabNet       = "Network & Internet"
+        TabAdv       = "Advanced Tools"
+        BtnScan      = "DISM ScanHealth"
+        BtnRestore   = "DISM RestoreHealth"
+        BtnSfc       = "SFC Scannow"
+        BtnSysRestore= "System Protection (Restore)"
+        BtnChkdsk    = "Disk Check (CHKDSK)"
+        BtnCleanMgr  = "Disk Cleanup (Cleanmgr)"
+        BtnWinClean  = "Component Cleanup (WinSxS)"
+        BtnOptDrive  = "Drive Optimizer (TRIM/Defrag)"
+        BtnWinsock   = "Reset Winsock Catalog (SENS Service)"
+        BtnIpReset   = "Reset TCP/IP Stack"
+        BtnFlushDns  = "Flush DNS Cache"
+        BtnSysInfo   = "System Information (Msinfo32)"
+        BtnDevMgr    = "Device Manager"
+        BtnDiskMgr   = "Disk Management"
+        BtnDxDiag    = "DirectX Diagnostic (DxDiag)"
+        BtnMemDiag   = "RAM Memory Diagnostic"
+        MemDiagHint  = "(with reboot)"
+        BtnEventVwr  = "Event Viewer"
+        BtnResMon    = "Resource Monitor"
+        BtnPerfDiag  = "Performance Diagnostic"
+        BtnReliability= "Reliability Monitor"
+        BtnMsConfig  = "System Configuration (Msconfig)"
+        BtnFirewall  = "Advanced Windows Firewall"
+        BtnNetConn   = "Network Connections (ncpa.cpl)"
+        BtnMRT       = "Malware Removal Tool (MRT)"
+        BtnUserPass  = "Advanced User Accounts (Netplwiz)"
+        BtnPower     = "Power Options"
+        BtnServices  = "Services (services.msc)"
+        BtnCompMgmt  = "Computer Management (compmgmt)"
+        BtnSfcLog    = "📄 View SFC report details"
+        ConfTitle    = "Confirmation"
+        MsgSfc       = "SFC Scannow checks the integrity of all protected system files.`n`nStart the verification in a console?"
+        MsgScan      = "This diagnostic checks the system image without modifying it.`n`nStart the scan in a console?"
+        MsgRestore   = "Automatically repairs corrupted system files.`n`nStart the repair in a console?"
+        MsgSysRestore= "Opens the Windows interface to manage and create restore points.`n`nOpen System Protection?"
+        MsgChkdsk    = "Checks the file system integrity of the system disk (C:).`n⚠️ A reboot scan may be offered if the disk is in use.`n`nLaunch CHKDSK in a console?"
+        MsgCleanMgr  = "Opens the native Windows Disk Cleanup tool.`n`nContinue?"
+        MsgWinClean  = "Deeply cleans the 'WinSxS' folder.`n⚠️ You will no longer be able to uninstall recent updates.`n`nContinue?"
+        MsgOptDrive  = "Opens the native tool to check TRIM (SSD) status and defrag drives.`n`nOpen Drive Optimizer?"
+        MsgWinsock   = "Repairs the Winsock catalog (useful for SENS or network issues).`n⚠️ System restart required.`n`nRun reset?"
+        MsgIpReset   = "Resets TCP/IP protocol to default state.`n⚠️ May clear static IP settings.`n⚠️ System restart required.`n`nRun reset?"
+        MsgFlushDns  = "Flushes the local DNS resolver cache.`n⚡ No restart required.`n`nFlush DNS?"
+        MsgSysInfo   = "Displays detailed information about your hardware and BIOS.`n`nOpen Msinfo32?"
+        MsgDevMgr    = "Opens Device Manager to check your drivers.`n`nContinue?"
+        MsgDiskMgr   = "Opens Disk Management to check your partitions.`n`nContinue?"
+        MsgDxDiag    = "Analyzes graphics, audio components, and DirectX drivers.`n`nLaunch DxDiag?"
+        MsgMemDiag   = "Checks RAM for physical defects (requires reboot).`n`nOpen diagnostic tool?"
+        MsgEventVwr  = "Opens Event Viewer to check system logs (crashes, SFC errors, etc.).`n`nContinue?"
+        MsgResMon    = "Opens Resource Monitor (CPU, RAM, Disk, Network in real-time).`n`nOpen tool?"
+        MsgPerfDiag  = "Generates a 60-second performance report in the background.`n`nStart analysis?"
+        MsgReliability= "Displays your system stability history.`n`nOpen Reliability Monitor?"
+        MsgMsConfig  = "Opens Msconfig to configure startup.`n`nOpen tool?"
+        MsgFirewall  = "Opens Windows Defender Firewall with Advanced Security.`n`nOpen Firewall?"
+        MsgNetConn   = "Opens the classic network connections and adapters panel.`n`nContinue?"
+        MsgMRT       = "Launches the built-in Windows Malicious Software Removal Tool.`n`nLaunch MRT?"
+        MsgUserPass  = "Opens the advanced user accounts and passwords manager.`n`nContinue?"
+        MsgPower     = "Opens the classic control panel for power management plans.`n`nContinue?"
+        MsgServices  = "Opens the Windows Services console (start/stop services).`n`nContinue?"
+        MsgCompMgmt  = "Opens Computer Management (disks, devices, events, shared folders).`n`nContinue?"
+        LogStart     = "[START] Launching native tool..."
+        LogEnd       = "[END] Process completed or interface closed."
+        SfcExtracted = "[INFO] SFC details extracted to %LOGPATH%."
+        SfcEmpty     = "[INFO] No SFC details to extract (file empty or missing)."
+        SfcRunning   = "[INFO] SFC launched in the background. Report will be detected on completion."
+        ToolNotFound = "[ERROR] Could not launch tool: %TOOL% not found or inaccessible."
+        AboutTitle   = "About"
+        AboutBody    = "Windows Maintenance Hub`r`nAll tools in this hub are natively built into Windows.`r`n`r`nVersion 0.15.0`r`n`r`nOpen Source`r`nCreated with the help of Google Gemini & Mistral Vibe.`r`nOS : Windows 10 & 11.`r`n2026/08"
+    }
+    DE = @{
+        Title        = "Windows Wartungs-Hub"
+        Header       = "Windows Wartungs-Hub"
+        TabSystem    = "System & Reparatur"
+        TabClean     = "Bereinigung & Optimierung"
+        TabDiag      = "Hardware & Diagnose"
+        TabPerf      = "Leistung & Protokolle"
+        TabNet       = "Netzwerk & Internet"
+        TabAdv       = "Erweiterte Tools"
+        BtnScan      = "DISM ScanHealth"
+        BtnRestore   = "DISM RestoreHealth"
+        BtnSfc       = "SFC Scannow"
+        BtnSysRestore= "Computerschutz (Wiederherstellung)"
+        BtnChkdsk    = "Datenträgerprüfung (CHKDSK)"
+        BtnCleanMgr  = "Datenträgerbereinigung (Cleanmgr)"
+        BtnWinClean  = "Komponentenbereinigung (WinSxS)"
+        BtnOptDrive  = "Laufwerksoptimierung (TRIM/Defrag)"
+        BtnWinsock   = "Winsock zurücksetzen (SENS-Dienst)"
+        BtnIpReset   = "TCP/IP-Stapel zurücksetzen"
+        BtnFlushDns  = "DNS-Cache leeren"
+        BtnSysInfo   = "Systeminformationen (Msinfo32)"
+        BtnDevMgr    = "Geräte-Manager"
+        BtnDiskMgr   = "Datenträgerverwaltung"
+        BtnDxDiag    = "DirectX-Diagnose (DxDiag)"
+        BtnMemDiag   = "RAM-Speicherdiagnose"
+        MemDiagHint  = "(mit Neustart)"
+        BtnEventVwr  = "Ereignisanzeige"
+        BtnResMon    = "Ressourcenmonitor"
+        BtnPerfDiag  = "Leistungsdiagnose"
+        BtnReliability= "Zuverlässigkeitsüberwachung"
+        BtnMsConfig  = "Systemkonfiguration (Msconfig)"
+        BtnFirewall  = "Erweiterte Windows-Firewall"
+        BtnNetConn   = "Netzwerkverbindungen (ncpa.cpl)"
+        BtnMRT       = "Malware-Entfernungstool (MRT)"
+        BtnUserPass  = "Erweiterte Benutzerkonten (Netplwiz)"
+        BtnPower     = "Energieoptionen"
+        BtnServices  = "Dienste (services.msc)"
+        BtnCompMgmt  = "Computerverwaltung (compmgmt)"
+        BtnSfcLog    = "📄 SFC-Berichtsdetails anzeigen"
+        ConfTitle    = "Bestätigung"
+        MsgSfc       = "SFC Scannow überprüft die Integrität aller geschützten Systemdateien.`n`nÜberprüfung in einer Konsole starten?"
+        MsgScan      = "Diese Diagnose überprüft das Systemabbild, ohne es zu ändern.`n`nScan in einer Konsole starten?"
+        MsgRestore   = "Repariert automatisch beschädigte Systemdateien.`n`nReparatur in einer Konsole starten?"
+        MsgSysRestore= "Öffnet die Windows-Oberfläche zum Verwalten von Wiederherstellungspunkten.`n`nComputerschutz öffnen?"
+        MsgChkdsk    = "Prüft die Integrität des Dateisystems der Systempartition (C:).`n⚠️ Bei belegtem Datenträger wird eine Prüfung beim Neustart angeboten.`n`nCHKDSK in einer Konsole starten?"
+        MsgCleanMgr  = "Öffnet das native Datenträgerbereinigungs-Tool.`n`nFortfahren?"
+        MsgWinClean  = "Bereinigt den 'WinSxS'-Ordner.`n⚠️ Aktuelle Updates können nicht mehr deinstalliert werden.`n`nFortfahren?"
+        MsgOptDrive  = "Öffnet das native Tool zur Überprüfung des TRIM-Status (SSD).`n`nLaufwerksoptimierung öffnen?"
+        MsgWinsock   = "Repariert den Winsock-Katalog.`n⚠️ Ein Neustart ist erforderlich.`n`nZurücksetzen ausführen?"
+        MsgIpReset   = "Setzt das TCP/IP-Protokoll zurück.`n⚠️ Kann statische IP-Einstellungen löschen.`n⚠️ Neustart erforderlich.`n`nZurücksetzen ausführen?"
+        MsgFlushDns  = "Leert den lokalen DNS-Auflösungscache.`n⚡ Kein Neustart erforderlich.`n`nDNS-Cache leeren?"
+        MsgSysInfo   = "Zeigt detaillierte Informationen zu Hardware und BIOS.`n`nMsinfo32 öffnen?"
+        MsgDevMgr    = "Öffnet den Geräte-Manager.`n`nFortfahren?"
+        MsgDiskMgr   = "Öffnet die Datenträgerverwaltung.`n`nFortfahren?"
+        MsgDxDiag    = "Analysiert Grafik-, Audiokomponenten und DirectX-Treiber.`n`nDxDiag starten?"
+        MsgMemDiag   = "Überprüft den RAM auf Fehler (Neustart erforderlich).`n`nDiagnosetool öffnen?"
+        MsgEventVwr  = "Öffnet die Ereignisanzeige für Systemprotokolle.`n`nFortfahren?"
+        MsgResMon    = "Öffnet den Ressourcenmonitor.`n`nTool öffnen?"
+        MsgPerfDiag  = "Erstellt im Hintergrund einen 60-sekündigen Leistungsbericht.`n`nAnalyse starten?"
+        MsgReliability= "Zeigt den Systemstabilitätsverlauf.`n`nZuverlässigkeitsüberwachung öffnen?"
+        MsgMsConfig  = "Öffnet Msconfig zur Startkonfiguration.`n`nTool öffnen?"
+        MsgFirewall  = "Öffnet die Windows Defender-Firewall mit erweiterter Sicherheit.`n`nFirewall öffnen?"
+        MsgNetConn   = "Öffnet das klassische Fenster für Netzwerkverbindungen und Adapter.`n`nFortfahren?"
+        MsgMRT       = "Startet das integrierte Windows-Tool zum Entfernen bösartiger Software.`n`nMRT starten?"
+        MsgUserPass  = "Öffnet die erweiterte Benutzerkonten- und Kennwortverwaltung.`n`nFortfahren?"
+        MsgPower     = "Öffnet die klassische Systemsteuerung für Energiesparpläne.`n`nFortfahren?"
+        MsgServices  = "Öffnet die Windows-Dienste-Konsole (Dienste starten/stoppen).`n`nFortfahren?"
+        MsgCompMgmt  = "Öffnet die Computerverwaltung (Datenträger, Geräte, Ereignisse, freigegebene Ordner).`n`nFortfahren?"
+        LogStart     = "[START] Natives Tool wird gestartet..."
+        LogEnd       = "[ENDE] Prozess abgeschlossen oder Oberfläche geschlossen."
+        SfcExtracted = "[INFO] SFC-Details extrahiert nach %LOGPATH%."
+        SfcEmpty     = "[INFO] Keine SFC-Details zu extrahieren (Datei leer oder fehlt)."
+        SfcRunning   = "[INFO] SFC im Hintergrund gestartet. Bericht wird nach Abschluss erkannt."
+        ToolNotFound = "[FEHLER] Tool konnte nicht gestartet werden: %TOOL% nicht gefunden oder nicht zugänglich."
+        AboutTitle   = "Über"
+        AboutBody    = "Windows Wartungs-Hub`r`nAlle Tools in diesem Hub sind nativ in Windows integriert.`r`n`r`nVersion 0.15.0`r`n`r`nOpen Source`r`nErstellt mit Hilfe von Google Gemini & Mistral Vibe.`r`nOS : Windows 10 & 11.`r`n2026/08"
+    }
+    IT = @{
+        Title        = "Hub di Manutenzione Windows"
+        Header       = "Hub di Manutenzione Windows"
+        TabSystem    = "Sistema e Ripristino"
+        TabClean     = "Pulizia e Ottimizzazione"
+        TabDiag      = "Hardware e Diagnostica"
+        TabPerf      = "Prestazioni e Registri"
+        TabNet       = "Rete & Internet"
+        TabAdv       = "Strumenti Avanzati"
+        BtnScan      = "DISM ScanHealth"
+        BtnRestore   = "DISM RestoreHealth"
+        BtnSfc       = "SFC Scannow"
+        BtnSysRestore= "Protezione di sistema (Ripristino)"
+        BtnChkdsk    = "Verifica disco (CHKDSK)"
+        BtnCleanMgr  = "Pulizia disco (Cleanmgr)"
+        BtnWinClean  = "Pulizia Componenti (WinSxS)"
+        BtnOptDrive  = "Ottimizzatore unità (TRIM/Defrag)"
+        BtnWinsock   = "Ripristina Winsock (Servizio SENS)"
+        BtnIpReset   = "Ripristina Stack TCP/IP"
+        BtnFlushDns  = "Svuota Cache DNS"
+        BtnSysInfo   = "Informazioni di Sistema (Msinfo32)"
+        BtnDevMgr    = "Gestione dispositivi"
+        BtnDiskMgr   = "Gestione disco"
+        BtnDxDiag    = "Diagnostica DirectX (DxDiag)"
+        BtnMemDiag   = "Diagnostica Memoria RAM"
+        MemDiagHint  = "(con riavvio)"
+        BtnEventVwr  = "Visualizzatore eventi"
+        BtnResMon    = "Monitoraggio risorse"
+        BtnPerfDiag  = "Diagnostica Prestazioni"
+        BtnReliability= "Monitoraggio Affidabilità"
+        BtnMsConfig  = "Configurazione di Sistema (Msconfig)"
+        BtnFirewall  = "Windows Firewall Avanzato"
+        BtnNetConn   = "Connessioni di Rete (ncpa.cpl)"
+        BtnMRT       = "Strumento Rimozione Malware (MRT)"
+        BtnUserPass  = "Gestione Account (Netplwiz)"
+        BtnPower     = "Opzioni Risparmio Energia"
+        BtnServices  = "Servizi (services.msc)"
+        BtnCompMgmt  = "Gestione computer (compmgmt)"
+        BtnSfcLog    = "📄 Visualizza dettagli rapporto SFC"
+        ConfTitle    = "Conferma"
+        MsgSfc       = "SFC Scannow verifica l'integrità dei file di sistema.`n`nAvviare la verifica in una console?"
+        MsgScan      = "Questa diagnostica verifica l'immagine di sistema senza modificarla.`n`nAvviare la scansione in una console?"
+        MsgRestore   = "Ripara automaticamente i file di sistema corrotti.`n`nAvviare la riparazione in una console?"
+        MsgSysRestore= "Apre l'interfaccia di Windows per gestire i punti di ripristino.`n`nAprire la Protezione di sistema?"
+        MsgChkdsk    = "Verifica l'integrità del file system del disco di sistema (C:).`n⚠️ Se il disco è in uso, verrà proposta una scansione al riavvio.`n`nAvviare CHKDSK in una console?"
+        MsgCleanMgr  = "Apre lo strumento nativo di Pulizia disco.`n`nContinuare?"
+        MsgWinClean  = "Pulisce a fondo la cartella 'WinSxS'.`n⚠️ Non potrai disinstallare gli ultimi aggiornamenti.`n`nContinuare?"
+        MsgOptDrive  = "Apre lo strumento nativo per verificare il TRIM (SSD) e deframmentare.`n`nAprire l'Ottimizzatore unità?"
+        MsgWinsock   = "Ripara il catalogo Winsock.`n⚠️ Sarà necessario riavviare il PC.`n`nEseguire il ripristino?"
+        MsgIpReset   = "Ripristina il protocollo TCP/IP allo stato iniziale.`n⚠️ Può cancellare le configurazioni IP statiche.`n⚠️ Richiede il riavvio del PC.`n`nEseguire il ripristino?"
+        MsgFlushDns  = "Svuota la cache del resolver DNS locale.`n⚡ Nessun riavvio richiesto.`n`nSvuotare la cache?"
+        MsgSysInfo   = "Mostra informazioni dettagliate su hardware e BIOS.`n`nAprire Msinfo32?"
+        MsgDevMgr    = "Apre Gestione dispositivi per verificare i driver.`n`nContinuare?"
+        MsgDiskMgr   = "Apre Gestione disco per verificare le partizioni.`n`nContinuare?"
+        MsgDxDiag    = "Analizza i componenti grafici, audio e i driver DirectX.`n`nAvviare DxDiag?"
+        MsgMemDiag   = "Verifica i difetti fisici della RAM (richiede riavvio).`n`nAprire lo strumento?"
+        MsgEventVwr  = "Apre il Visualizzatore eventi per consultare i registri di sistema.`n`nContinuare?"
+        MsgResMon    = "Apre il Monitoraggio risorse (CPU, RAM, Disco, Rete in tempo reale).`n`nAprire lo strumento?"
+        MsgPerfDiag  = "Genera un rapporto di 60 secondi in background.`n`nAvviare l'analisi?"
+        MsgReliability= "Mostra la cronologia di stabilità del sistema.`n`nAprire il Monitoraggio affidabilità?"
+        MsgMsConfig  = "Apre Msconfig per configurare l'avvio.`n`nAprire lo strumento?"
+        MsgFirewall  = "Apre Windows Defender Firewall con sicurezza avanzata.`n`nAprire il Firewall?"
+        MsgNetConn   = "Apre il pannello classico delle connessioni e delle schede di rete.`n`nContinuare?"
+        MsgMRT       = "Avvia lo strumento integrato di Windows per la rimozione del software dannoso.`n`nAvviare MRT?"
+        MsgUserPass  = "Apre la gestione avanzata degli account utente e delle password.`n`nContinuare?"
+        MsgPower     = "Apre il pannello di controllo classico delle combinazioni per il risparmio energia.`n`nContinuare?"
+        MsgServices  = "Apre la console dei Servizi di Windows (avvio/arresto dei servizi).`n`nContinuare?"
+        MsgCompMgmt  = "Apre Gestione computer (dischi, dispositivi, eventi, cartelle condivise).`n`nContinuare?"
+        LogStart     = "[INIZIO] Avvio strumento nativo..."
+        LogEnd       = "[FINE] Processo completato o interfaccia chiusa."
+        SfcExtracted = "[INFO] Dettagli SFC estratti in %LOGPATH%."
+        SfcEmpty     = "[INFO] Nessun dettaglio SFC da estrarre (file vuoto o mancante)."
+        SfcRunning   = "[INFO] SFC avviato in background. Il report sarà rilevato al termine."
+        ToolNotFound = "[ERRORE] Impossibile avviare lo strumento: %TOOL% non trovato o inaccessibile."
+        AboutTitle   = "Informazioni"
+        AboutBody    = "Hub di Manutenzione Windows`r`nTutti gli strumenti di questo hub sono nativamente integrati in Windows.`r`n`r`nVersione 0.15.0`r`n`r`nOpen Source`r`nCreato con l'aiuto di Google Gemini & Mistral Vibe.`r`nOS : Windows 10 & 11.`r`n2026/08"
+    }
+    ES = @{
+        Title        = "Hub de Mantenimiento de Windows"
+        Header       = "Hub de Mantenimiento de Windows"
+        TabSystem    = "Sistema y Reparación"
+        TabClean     = "Limpieza y Optimización"
+        TabDiag      = "Hardware y Diagnósticos"
+        TabPerf      = "Rendimiento y Registros"
+        TabNet       = "Red & Internet"
+        TabAdv       = "Herramientas Avanzadas"
+        BtnScan      = "DISM ScanHealth"
+        BtnRestore   = "DISM RestoreHealth"
+        BtnSfc       = "SFC Scannow"
+        BtnSysRestore= "Protección del sistema (Restaurar)"
+        BtnChkdsk    = "Verificación de disco (CHKDSK)"
+        BtnCleanMgr  = "Liberador de espacio (Cleanmgr)"
+        BtnWinClean  = "Limpieza Componentes (WinSxS)"
+        BtnOptDrive  = "Optimizador de unidades (TRIM)"
+        BtnWinsock   = "Restablecer Winsock (Servicio SENS)"
+        BtnIpReset   = "Restablecer pila TCP/IP"
+        BtnFlushDns  = "Vaciar caché DNS"
+        BtnSysInfo   = "Información del Sistema (Msinfo32)"
+        BtnDevMgr    = "Administrador de dispositivos"
+        BtnDiskMgr   = "Administración de discos"
+        BtnDxDiag    = "Diagnóstico DirectX (DxDiag)"
+        BtnMemDiag   = "Diagnóstico de Memoria RAM"
+        MemDiagHint  = "(con reinicio)"
+        BtnEventVwr  = "Visor de eventos"
+        BtnResMon    = "Monitor de recursos"
+        BtnPerfDiag  = "Diagnóstico de Rendimiento"
+        BtnReliability= "Monitor de Confiabilidad"
+        BtnMsConfig  = "Configuración del Sistema (Msconfig)"
+        BtnFirewall  = "Firewall de Windows Avanzado"
+        BtnNetConn   = "Conexiones de Red (ncpa.cpl)"
+        BtnMRT       = "Herramienta de Eliminación (MRT)"
+        BtnUserPass  = "Cuentas de Usuario (Netplwiz)"
+        BtnPower     = "Opciones de Energía"
+        BtnServices  = "Servicios (services.msc)"
+        BtnCompMgmt  = "Administración de equipos (compmgmt)"
+        BtnSfcLog    = "📄 Ver detalles del informe SFC"
+        ConfTitle    = "Confirmación"
+        MsgSfc       = "SFC Scannow verifica la integridad de los archivos del sistema.`n`n¿Iniciar la verificación en consola?"
+        MsgScan      = "Este diagnóstico verifica la imagen del sistema sin modificarla.`n`n¿Iniciar el análisis en consola?"
+        MsgRestore   = "Repara automáticamente los archivos del sistema corruptos.`n`n¿Iniciar la reparación en consola?"
+        MsgSysRestore= "Abre la interfaz de Windows para administrar puntos de restauración.`n`n¿Abrir Protección del sistema?"
+        MsgChkdsk    = "Verifica la integridad del sistema de archivos del disco del sistema (C:).`n⚠️ Si el disco está en uso, se ofrecerá un análisis al reiniciar.`n`n¿Iniciar CHKDSK en consola?"
+        MsgCleanMgr  = "Abre el Liberador de espacio en disco nativo.`n`n¿Continuar?"
+        MsgWinClean  = "Limpia en profundidad la carpeta 'WinSxS'.`n⚠️ No podrá desinstalar actualizaciones recientes.`n`n¿Continuar?"
+        MsgOptDrive  = "Abre la herramienta nativa para verificar el TRIM (SSD) y desfragmentar.`n`n¿Abrir Optimizador de unidades?"
+        MsgWinsock   = "Repara el catálogo Winsock.`n⚠️ Requiere reiniciar el equipo.`n`n¿Ejecutar el restablecimiento?"
+        MsgIpReset   = "Restablece el protocolo TCP/IP a su estado predeterminado.`n⚠️ Puede borrar la configuración de IP estática.`n⚠️ Requiere reiniciar el equipo.`n`n¿Ejecutar el restablecimiento?"
+        MsgFlushDns  = "Vacía la caché de resolución DNS local.`n⚡ No requiere reinicio.`n`n¿Vaciar la caché?"
+        MsgSysInfo   = "Muestra información detallada sobre hardware y BIOS.`n`n¿Abrir Msinfo32?"
+        MsgDevMgr    = "Abre el Administrador de dispositivos para comprobar controladores.`n`n¿Continuar?"
+        MsgDiskMgr   = "Abre la Administración de discos para comprobar particiones.`n`n¿Continuar?"
+        MsgDxDiag    = "Analiza componentes gráficos, de audio y controladores DirectX.`n`n¿Iniciar DxDiag?"
+        MsgMemDiag   = "Verifica los defectos físicos de la RAM (requiere reinicio).`n`n¿Abrir herramienta?"
+        MsgEventVwr  = "Abre el Visor de eventos para consultar registros del sistema.`n`n¿Continuar?"
+        MsgResMon    = "Abre el Monitor de recursos (CPU, RAM, Disco, Red en tiempo real).`n`n¿Abrir herramienta?"
+        MsgPerfDiag  = "Genera un informe de rendimiento de 60 segundos en segundo plano.`n`n¿Iniciar análisis?"
+        MsgReliability= "Muestra el historial de estabilidad del sistema.`n`n¿Abrir Monitor de confiabilidad?"
+        MsgMsConfig  = "Abre Msconfig para configurar el inicio.`n`n¿Abrir herramienta?"
+        MsgFirewall  = "Abre Firewall de Windows Defender con seguridad avanzada.`n`n¿Abrir Firewall?"
+        MsgNetConn   = "Abre el panel clásico de conexiones y adaptadores de red.`n`n¿Continuar?"
+        MsgMRT       = "Inicia la herramienta integrada de Windows para la eliminación de software malintencionado.`n`n¿Iniciar MRT?"
+        MsgUserPass  = "Abre el administrador avanzado de cuentas de usuario y contraseñas.`n`n¿Continuar?"
+        MsgPower     = "Abre el panel de control clásico para configurar los planes de energía.`n`n¿Continuar?"
+        MsgServices  = "Abre la consola de Servicios de Windows (iniciar/detener servicios).`n`n¿Continuar?"
+        MsgCompMgmt  = "Abre Administración de equipos (discos, dispositivos, eventos, carpetas compartidas).`n`n¿Continuar?"
+        LogStart     = "[INICIO] Iniciando herramienta nativa..."
+        LogEnd       = "[FIN] Proceso completado o interfaz cerrada."
+        SfcExtracted = "[INFO] Detalles de SFC extraídos a %LOGPATH%."
+        SfcEmpty     = "[INFO] Sin detalles de SFC que extraer (archivo vacío o ausente)."
+        SfcRunning   = "[INFO] SFC iniciado en segundo plano. El informe se detectará al finalizar."
+        ToolNotFound = "[ERROR] No se pudo iniciar la herramienta: %TOOL% no encontrado o inaccesible."
+        AboutTitle   = "Acerca de"
+        AboutBody    = "Hub de Mantenimiento de Windows`r`nTodas las herramientas de este hub están integradas nativamente en Windows.`r`n`r`nVersión 0.15.0`r`n`r`nOpen Source`r`nCreado con la ayuda de Google Gemini & Mistral Vibe.`r`nOS : Windows 10 & 11.`r`n2026/08"
+    }
+}
+
+$Script:CurrentLang = "EN"
+
+# ----------------------------------------------------------------------
+# 2. Création de la Fenêtre Principale & Boutons
+# ----------------------------------------------------------------------
+# (EnableVisualStyles a déjà été appelé tout en haut, AVANT les formulaires)
+
+$Form = New-Object System.Windows.Forms.Form
+$Form.Text = $Translations[$Script:CurrentLang].Title
+# v0.15 : élargi à 900x720 pour les 6 onglets + bandeau supérieur aéré
+$Form.Size = New-Object System.Drawing.Size(900, 720)
+$Form.MinimumSize = New-Object System.Drawing.Size(900, 720)
+$Form.StartPosition = "CenterScreen"
+$Form.BackColor = [System.Drawing.Color]::FromArgb(243, 243, 243)
+$Form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedSingle
+$Form.MaximizeBox = $false
+
+# --- Bandeau Supérieur ---
+$LabelTitre = New-Object System.Windows.Forms.Label
+$LabelTitre.Text = $Translations[$Script:CurrentLang].Header
+$LabelTitre.Font = New-Object System.Drawing.Font("Segoe UI", 14, [System.Drawing.FontStyle]::Bold)
+$LabelTitre.Size = New-Object System.Drawing.Size(450, 30)
+$LabelTitre.Location = New-Object System.Drawing.Point(20, 15)
+$Form.Controls.Add($LabelTitre)
+
+# --- Bouton "Langue" ---
+$ComboLang = New-Object System.Windows.Forms.ComboBox
+$ComboLang.Location = New-Object System.Drawing.Point(660, 17)
+$ComboLang.Size = New-Object System.Drawing.Size(100, 30)
+$ComboLang.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
+$ComboLang.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+[void]$ComboLang.Items.AddRange(@("EN", "FR", "DE", "IT", "ES"))
+$ComboLang.SelectedItem = $Script:CurrentLang
+$Form.Controls.Add($ComboLang)
+
+# --- Bouton "About" ---
+$BtnAbout = New-Object System.Windows.Forms.Button
+$BtnAbout.Text = "?"
+$BtnAbout.Location = New-Object System.Drawing.Point(770, 16)
+$BtnAbout.Size = New-Object System.Drawing.Size(30, 25)
+$BtnAbout.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+$BtnAbout.FlatStyle = "Flat"
+$BtnAbout.FlatAppearance.BorderSize = 1
+$BtnAbout.BackColor = [System.Drawing.Color]::White
+$Form.Controls.Add($BtnAbout)
+
+# --- SplitContainer ---
+$SplitContainer = New-Object System.Windows.Forms.SplitContainer
+$SplitContainer.Orientation = [System.Windows.Forms.Orientation]::Horizontal
+$SplitContainer.Location = New-Object System.Drawing.Point(20, 60)
+$SplitContainer.Size = New-Object System.Drawing.Size(($Form.ClientSize.Width - 40), ($Form.ClientSize.Height - 80))
+$SplitContainer.SplitterDistance = 480
+$SplitContainer.Panel1MinSize = 460
+$SplitContainer.Panel2MinSize = 100
+# v0.14 : 480px permet d'afficher les 7 boutons de l'onglet "Outils Avancés"
+$Form.Controls.Add($SplitContainer)
+
+# --- Onglets ---
+$TabControl = New-Object System.Windows.Forms.TabControl
+$TabControl.Alignment = "Top"
+$TabControl.Multiline = $false 
+$TabControl.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+$TabControl.Dock = [System.Windows.Forms.DockStyle]::Fill
+$SplitContainer.Panel1.Controls.Add($TabControl)
+
+$TabSys   = New-Object System.Windows.Forms.TabPage
+$TabClean = New-Object System.Windows.Forms.TabPage
+$TabDiag  = New-Object System.Windows.Forms.TabPage
+$TabPerf  = New-Object System.Windows.Forms.TabPage
+$TabNet   = New-Object System.Windows.Forms.TabPage
+$TabAdv   = New-Object System.Windows.Forms.TabPage
+
+$TabControl.TabPages.Add($TabSys)
+$TabControl.TabPages.Add($TabClean)
+$TabControl.TabPages.Add($TabDiag)
+$TabControl.TabPages.Add($TabPerf)
+$TabControl.TabPages.Add($TabNet)
+$TabControl.TabPages.Add($TabAdv)
+
+function Create-StackedTabButton {
+    param ([System.Windows.Forms.TabPage]$ParentTab, [string]$Text, [int]$Index, [System.Drawing.Color]$BgColor)
+    $Btn = New-Object System.Windows.Forms.Button
+    $Btn.Text = $Text
+    $Btn.Size = New-Object System.Drawing.Size(640, 45)
+    $Y = 15 + ($Index * 55)
+    $Btn.Location = New-Object System.Drawing.Point(20, $Y)
+    $Btn.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+    $Btn.FlatStyle = "Flat"
+    $Btn.FlatAppearance.BorderSize = 0
+    $Btn.BackColor = $BgColor
+    $Btn.ForeColor = [System.Drawing.Color]::White
+    $ParentTab.Controls.Add($Btn)
+    $Btn.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
+    return $Btn
+}
+
+$C_Sys   = [System.Drawing.Color]::FromArgb(0, 120, 215)
+$C_Clean = [System.Drawing.Color]::FromArgb(16, 124, 65)
+$C_Diag  = [System.Drawing.Color]::FromArgb(225, 112, 20)
+$C_Perf  = [System.Drawing.Color]::FromArgb(114, 30, 149)
+$C_Net   = [System.Drawing.Color]::FromArgb(0, 150, 200)
+$C_Adv   = [System.Drawing.Color]::FromArgb(240, 200, 30)
+$C_Log   = [System.Drawing.Color]::FromArgb(100, 100, 100)
+
+# Group 1 - Système (6 boutons)
+$BtnScan = Create-StackedTabButton -ParentTab $TabSys -Text "" -Index 0 -BgColor $C_Sys
+$BtnScan.Font = New-Object System.Drawing.Font("Segoe UI Emoji", 10, [System.Drawing.FontStyle]::bold)
+if (-not $IsAdmin) { $BtnScan.Enabled = $false }
+
+$BtnRestore = Create-StackedTabButton -ParentTab $TabSys -Text "" -Index 1 -BgColor $C_Sys
+$BtnRestore.Font = New-Object System.Drawing.Font("Segoe UI Emoji", 10, [System.Drawing.FontStyle]::bold)
+if (-not $IsAdmin) { $BtnRestore.Enabled = $false }
+
+$BtnSfc = Create-StackedTabButton -ParentTab $TabSys -Text "" -Index 2 -BgColor $C_Sys
+$BtnSfc.Font = New-Object System.Drawing.Font("Segoe UI Emoji", 10, [System.Drawing.FontStyle]::bold)
+if (-not $IsAdmin) { $BtnSfc.Enabled = $false }
+
+$BtnSysRestore = Create-StackedTabButton -ParentTab $TabSys -Text "" -Index 3 -BgColor $C_Sys
+$BtnSysRestore.Font = New-Object System.Drawing.Font("Segoe UI Emoji", 10, [System.Drawing.FontStyle]::bold)
+if (-not $IsAdmin) { $BtnSysRestore.Enabled = $false }
+
+# v0.14 : CHKDSK (nouveau, admin requis)
+$BtnChkdsk = Create-StackedTabButton -ParentTab $TabSys -Text "" -Index 4 -BgColor $C_Sys
+$BtnChkdsk.Font = New-Object System.Drawing.Font("Segoe UI Emoji", 10, [System.Drawing.FontStyle]::bold)
+if (-not $IsAdmin) { $BtnChkdsk.Enabled = $false }
+
+# Bouton log SFC (Masqué par défaut)
+$BtnViewSfcLog = Create-StackedTabButton -ParentTab $TabSys -Text "" -Index 5 -BgColor $C_Log
+$BtnViewSfcLog.Visible = $false
+
+# Group 2 - Nettoyage (3 boutons)
+$BtnCleanMgr = Create-StackedTabButton -ParentTab $TabClean -Text "" -Index 0 -BgColor $C_Clean
+
+$BtnWinClean = Create-StackedTabButton -ParentTab $TabClean -Text "" -Index 1 -BgColor $C_Clean
+$BtnWinClean.Font = New-Object System.Drawing.Font("Segoe UI Emoji", 10, [System.Drawing.FontStyle]::bold)
+if (-not $IsAdmin) { $BtnWinClean.Enabled = $false }
+
+$BtnOptDrive = Create-StackedTabButton -ParentTab $TabClean -Text "" -Index 2 -BgColor $C_Clean
+
+# v0.15 - Group Réseau & Internet (4 boutons : Winsock + TCP/IP + FlushDns déplacés depuis Nettoyage, + NetConn depuis Avancés)
+$BtnWinsock  = Create-StackedTabButton -ParentTab $TabNet -Text "" -Index 0 -BgColor $C_Net
+$BtnWinsock.Font = New-Object System.Drawing.Font("Segoe UI Emoji", 10, [System.Drawing.FontStyle]::bold)
+if (-not $IsAdmin) { $BtnWinsock.Enabled = $false }
+
+$BtnIpReset  = Create-StackedTabButton -ParentTab $TabNet -Text "" -Index 1 -BgColor $C_Net
+$BtnIpReset.Font = New-Object System.Drawing.Font("Segoe UI Emoji", 10, [System.Drawing.FontStyle]::bold)
+if (-not $IsAdmin) { $BtnIpReset.Enabled = $false }
+
+$BtnFlushDns = Create-StackedTabButton -ParentTab $TabNet -Text "" -Index 2 -BgColor $C_Net
+
+$BtnNetConn  = Create-StackedTabButton -ParentTab $TabNet -Text "" -Index 3 -BgColor $C_Net
+
+
+# Group 3 - Diagnostics (5 boutons)
+$BtnSysInfo  = Create-StackedTabButton -ParentTab $TabDiag -Text "" -Index 0 -BgColor $C_Diag
+$BtnDevMgr   = Create-StackedTabButton -ParentTab $TabDiag -Text "" -Index 1 -BgColor $C_Diag
+$BtnDiskMgr  = Create-StackedTabButton -ParentTab $TabDiag -Text "" -Index 2 -BgColor $C_Diag
+$BtnDxDiag   = Create-StackedTabButton -ParentTab $TabDiag -Text "" -Index 3 -BgColor $C_Diag
+
+$BtnMemDiag  = Create-StackedTabButton -ParentTab $TabDiag -Text "" -Index 4 -BgColor $C_Diag
+$BtnMemDiag.Font = New-Object System.Drawing.Font("Segoe UI Emoji", 10, [System.Drawing.FontStyle]::bold)
+
+# Group 4 - Performances (5 boutons)
+$BtnEventVwr = Create-StackedTabButton -ParentTab $TabPerf -Text "" -Index 0 -BgColor $C_Perf
+
+$BtnResMon   = Create-StackedTabButton -ParentTab $TabPerf -Text "" -Index 1 -BgColor $C_Perf
+$BtnResMon.Font = New-Object System.Drawing.Font("Segoe UI Emoji", 10, [System.Drawing.FontStyle]::bold)
+if (-not $IsAdmin) { $BtnResMon.Enabled = $false }
+
+$BtnPerfDiag = Create-StackedTabButton -ParentTab $TabPerf -Text "" -Index 2 -BgColor $C_Perf
+$BtnPerfDiag.Font = New-Object System.Drawing.Font("Segoe UI Emoji", 10, [System.Drawing.FontStyle]::bold)
+if (-not $IsAdmin) { $BtnPerfDiag.Enabled = $false }
+
+$BtnReliability = Create-StackedTabButton -ParentTab $TabPerf -Text "" -Index 3 -BgColor $C_Perf
+
+$BtnMsConfig = Create-StackedTabButton -ParentTab $TabPerf -Text "" -Index 4 -BgColor $C_Perf
+$BtnMsConfig.Font = New-Object System.Drawing.Font("Segoe UI Emoji", 10, [System.Drawing.FontStyle]::bold)
+if (-not $IsAdmin) { $BtnMsConfig.Enabled = $false }
+
+# Group 5 - Avancés (6 boutons : NetConn déplacé vers Réseau)
+$BtnFirewall = Create-StackedTabButton -ParentTab $TabAdv -Text "" -Index 0 -BgColor $C_Adv
+$BtnFirewall.Font = New-Object System.Drawing.Font("Segoe UI Emoji", 10, [System.Drawing.FontStyle]::bold)
+if (-not $IsAdmin) { $BtnFirewall.Enabled = $false }
+
+# v0.14 : Services (nouveau, admin requis)
+$BtnServices = Create-StackedTabButton -ParentTab $TabAdv -Text "" -Index 1 -BgColor $C_Adv
+$BtnServices.Font = New-Object System.Drawing.Font("Segoe UI Emoji", 10, [System.Drawing.FontStyle]::bold)
+if (-not $IsAdmin) { $BtnServices.Enabled = $false }
+
+# v0.14 : Gestion de l'ordinateur (nouveau, admin requis)
+$BtnCompMgmt = Create-StackedTabButton -ParentTab $TabAdv -Text "" -Index 2 -BgColor $C_Adv
+$BtnCompMgmt.Font = New-Object System.Drawing.Font("Segoe UI Emoji", 10, [System.Drawing.FontStyle]::bold)
+if (-not $IsAdmin) { $BtnCompMgmt.Enabled = $false }
+
+$BtnMRT      = Create-StackedTabButton -ParentTab $TabAdv -Text "" -Index 3 -BgColor $C_Adv
+$BtnMRT.Font = New-Object System.Drawing.Font("Segoe UI Emoji", 10, [System.Drawing.FontStyle]::bold)
+if (-not $IsAdmin) { $BtnMRT.Enabled = $false }
+
+$BtnUserPass = Create-StackedTabButton -ParentTab $TabAdv -Text "" -Index 4 -BgColor $C_Adv
+$BtnUserPass.Font = New-Object System.Drawing.Font("Segoe UI Emoji", 10, [System.Drawing.FontStyle]::bold)
+if (-not $IsAdmin) { $BtnUserPass.Enabled = $false }
+
+$BtnPower    = Create-StackedTabButton -ParentTab $TabAdv -Text "" -Index 5 -BgColor $C_Adv
+
+foreach($tab in $TabControl.TabPages) {
+    foreach($ctl in $tab.Controls) {
+        if ($ctl -is [System.Windows.Forms.Button]) {
+            $ctl.Width = $Form.ClientSize.Width - 80
+        }
+    }
+}
+
+# Console intégrée
+$TxtOutput = New-Object System.Windows.Forms.TextBox
+$TxtOutput.Multiline = $true
+$TxtOutput.ScrollBars = "Vertical"
+$TxtOutput.Font = New-Object System.Drawing.Font("Consolas", 10)
+$TxtOutput.BackColor = [System.Drawing.Color]::Black
+$TxtOutput.ForeColor = [System.Drawing.Color]::Lime
+$TxtOutput.ReadOnly = $true
+$TxtOutput.Dock = [System.Windows.Forms.DockStyle]::Fill
+$SplitContainer.Panel2.Controls.Add($TxtOutput)
+
+# ----------------------------------------------------------------------
+# 3. Logique d'actualisation de la Traduction
+# ----------------------------------------------------------------------
+function Update-InterfaceLanguage {
+    $L = $Translations[$Script:CurrentLang]
+    $Form.Text             = $L.Title
+    $LabelTitre.Text       = $L.Header
+    if ($IsAdmin) {
+        $Form.Text += " [ADMIN]"
+    } else {
+        $Form.Text += " [USER]"
+    }
+
+    $TabSys.Text           = $L.TabSystem
+    $TabClean.Text         = $L.TabClean
+    $TabDiag.Text          = $L.TabDiag
+    $TabPerf.Text          = $L.TabPerf
+    $TabNet.Text           = $L.TabNet
+    $TabAdv.Text           = $L.TabAdv
+
+    $BtnScan.Text          = $L.BtnScan + " 🛡️"
+    $BtnRestore.Text       = $L.BtnRestore + " 🛡️"
+    $BtnSfc.Text           = $L.BtnSfc + " 🛡️"
+    $BtnSysRestore.Text    = $L.BtnSysRestore + " 🛡️"
+    $BtnChkdsk.Text        = $L.BtnChkdsk + " 🛡️"
+    $BtnViewSfcLog.Text    = $L.BtnSfcLog
+    
+    $BtnCleanMgr.Text      = $L.BtnCleanMgr
+    $BtnWinClean.Text      = $L.BtnWinClean + " 🛡️"
+    $BtnOptDrive.Text      = $L.BtnOptDrive
+    
+    $BtnWinsock.Text       = $L.BtnWinsock + $(if (-not $IsAdmin) { " 🔒" } else { " 🛡️" })
+    $BtnIpReset.Text       = $L.BtnIpReset + $(if (-not $IsAdmin) { " 🔒" } else { " 🛡️" })
+    $BtnFlushDns.Text      = $L.BtnFlushDns
+    
+    $BtnSysInfo.Text       = $L.BtnSysInfo
+    $BtnDevMgr.Text        = $L.BtnDevMgr
+    $BtnDiskMgr.Text       = $L.BtnDiskMgr
+    $BtnDxDiag.Text        = $L.BtnDxDiag
+    # v0.14 : MemDiagHint traduit au lieu de "(with reboot)" en dur
+    $BtnMemDiag.Text       = $L.BtnMemDiag + " $($L.MemDiagHint) 🛡️"
+    
+    $BtnEventVwr.Text      = $L.BtnEventVwr
+    $BtnResMon.Text        = $L.BtnResMon
+    $BtnPerfDiag.Text      = $L.BtnPerfDiag + " 🛡️"
+    $BtnReliability.Text   = $L.BtnReliability
+    $BtnMsConfig.Text      = $L.BtnMsConfig + " 🛡️"
+
+    $BtnFirewall.Text      = $L.BtnFirewall + " 🛡️"
+    $BtnServices.Text      = $L.BtnServices + " 🛡️"
+    $BtnCompMgmt.Text      = $L.BtnCompMgmt + " 🛡️"
+    $BtnNetConn.Text       = $L.BtnNetConn
+    $BtnMRT.Text           = $L.BtnMRT + " 🛡️"
+    $BtnUserPass.Text      = $L.BtnUserPass + " 🛡️"
+    $BtnPower.Text         = $L.BtnPower
+}
+
+Update-InterfaceLanguage
+
+$ComboLang.Add_SelectedIndexChanged({
+    $Script:CurrentLang = $ComboLang.SelectedItem.ToString()
+    Update-InterfaceLanguage
+})
+
+# ----------------------------------------------------------------------
+# 4. Helpers Fonctionnels & Exécution
+# ----------------------------------------------------------------------
+function Confirm-Action { 
+    param ([string]$Message) 
+    $L = $Translations[$Script:CurrentLang]
+    $Result = [System.Windows.Forms.MessageBox]::Show($Message, $L.ConfTitle, [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
+    return ($Result -eq [System.Windows.Forms.DialogResult]::Yes) 
+}
+
+function Write-Log {
+    param ([string]$Message)
+    if ($TxtOutput -and -not $TxtOutput.IsDisposed) {
+        $TxtOutput.AppendText("`r`n$Message`r`n")
+    }
+}
+
+# v0.14 : durcissement .msc/.cpl. On n'appelle plus directement devmgmt.msc
+# (qui repose sur ShellExecute / associations). À la place on invoque explicitement
+# l'hôte (mmc.exe pour les .msc, control.exe pour les .cpl) avec un chemin absolu
+# System32. Cela évite qu'un faux .msc plus tôt dans le PATH soit utilisé.
+function Resolve-SystemToolPath {
+    param ([string]$Tool)
+    # Binaire natif dans System32 : on renvoie le chemin complet si présent
+    $sys32 = Join-Path $env:windir "System32\$Tool"
+    if (Test-Path -LiteralPath $sys32) { return $sys32 }
+    return $Tool
+}
+
+function Invoke-NativeTool { 
+    param ([string]$Command, [string]$Arguments) 
+    $L = $Translations[$Script:CurrentLang]
+    Write-Log "$($L.LogStart) $Command $Arguments"
+    
+    try {
+        $fileName = $Command
+        $fileArgs = $Arguments
+
+        # v0.14 : .msc → mmc.exe "<chemin complet>"
+        if ($Command -like '*.msc') {
+            $mscPath = Resolve-SystemToolPath -Tool $Command
+            $fileName = Resolve-SystemToolPath -Tool 'mmc.exe'
+            $fileArgs = "`"$mscPath`""
+            if ($Arguments) { $fileArgs += " $Arguments" }
+        }
+        # v0.14 : .cpl → control.exe "<chemin complet>"
+        elseif ($Command -like '*.cpl') {
+            $cplPath = Resolve-SystemToolPath -Tool $Command
+            $fileName = Resolve-SystemToolPath -Tool 'control.exe'
+            $fileArgs = "`"$cplPath`""
+            if ($Arguments) { $fileArgs += " $Arguments" }
+        }
+        else {
+            # Exécutable normal : résolution System32
+            $fileName = Resolve-SystemToolPath -Tool $Command
+        }
+
+        $StartInfo = New-Object System.Diagnostics.ProcessStartInfo
+        $StartInfo.FileName = $fileName
+        if ($fileArgs) { $StartInfo.Arguments = $fileArgs }
+        $StartInfo.UseShellExecute = $true 
+        
+        [void][System.Diagnostics.Process]::Start($StartInfo)
+    }
+    catch {
+        $errMsg = $L.ToolNotFound -replace '%TOOL%', $Command
+        Write-Log $errMsg
+    }
+}
+
+# ----------------------------------------------------------------------
+# 5. Gestion des Événements Clics
+# ----------------------------------------------------------------------
+$BtnScan.Add_Click({ 
+    if (Confirm-Action $Translations[$Script:CurrentLang].MsgScan) { 
+        Invoke-NativeTool "powershell.exe" "-NoProfile -NoExit -Command `"$ConsoleSetup DISM.exe /Online /Cleanup-Image /ScanHealth`"" 
+    } 
+})
+
+$BtnRestore.Add_Click({ 
+    if (Confirm-Action $Translations[$Script:CurrentLang].MsgRestore) { 
+        Invoke-NativeTool "powershell.exe" "-NoProfile -NoExit -Command `"$ConsoleSetup DISM.exe /Online /Cleanup-image /Restorehealth`"" 
+    } 
+})
+
+# v0.14 : SFC asynchrone — la fenêtre principale reste réactive pendant l'analyse.
+# On s'abonne à l'événement Exited du processus via Register-ObjectEvent.
+$BtnSfc.Add_Click({ 
+    # Réinitialiser l'état du bouton de log à chaque lancement
+    $BtnViewSfcLog.Visible = $false
+
+    if (Confirm-Action $Translations[$Script:CurrentLang].MsgSfc) { 
+        $L = $Translations[$Script:CurrentLang]
+        $SfcReportPath = Join-Path $env:TEMP "SFC_Details.txt"
+
+        # Construction de la commande SFC + extraction du rapport dans %TEMP%
+        $SfcCmd = "$ConsoleSetup sfc.exe /scannow; " +
+                  "`$LogPath = '$SfcReportPath'; " +
+                  "if (Test-Path `"`$env:windir`\Logs`\CBS`\CBS.log`") { " +
+                  "  Write-Host 'Extraction du rapport SFC (peut prendre un moment)...' -ForegroundColor Cyan; " +
+                  "  try { Select-String -Path `"`$env:windir`\Logs`\CBS`\CBS.log`" -Pattern '\[SR\]' -ErrorAction Stop | ForEach-Object { `$_.Line } | Set-Content -LiteralPath `$LogPath -Encoding UTF8; " +
+                  "    Write-Host 'Rapport SFC sauvegarde.' -ForegroundColor Green } " +
+                  "  catch { Write-Host 'Echec extraction rapport SFC.' -ForegroundColor Red } " +
+                  "} else { Write-Host 'CBS.log introuvable.' -ForegroundColor Yellow }; " +
+                  "Write-Host `"`r`nRapport disponible : `$LogPath`" -ForegroundColor Cyan"
+        
+        Write-Log $L.SfcRunning
+
+        # Lancement sans WaitForExit : la fenêtre principale reste utilisable
+        $SfcProc = Start-Process powershell -ArgumentList "-NoProfile -NoExit -Command `"$SfcCmd`"" -PassThru
+
+        # Détection asynchrone de la fin du processus
+        $SfcEventAction = {
+            $SfcReportPath = Join-Path $env:TEMP "SFC_Details.txt"
+            if ((Test-Path -LiteralPath $SfcReportPath) -and ((Get-Item -LiteralPath $SfcReportPath).Length -gt 0)) {
+                $BtnViewSfcLog.Visible = $true
+                $msg = $Translations[$Script:CurrentLang].SfcExtracted -replace '%LOGPATH%', $SfcReportPath
+            } else {
+                $msg = $Translations[$Script:CurrentLang].SfcEmpty
+            }
+            Write-Log $msg
+        }
+        # Register-ObjectEvent déclenche $SfcEventAction quand $SfcProc se termine
+        Register-ObjectEvent -InputObject $SfcProc -EventName Exited -Action $SfcEventAction | Out-Null
+    } 
+})
+
+$BtnViewSfcLog.Add_Click({ 
+    $SfcReportPath = Join-Path $env:TEMP "SFC_Details.txt"
+    if (Test-Path -LiteralPath $SfcReportPath) {
+        Invoke-NativeTool "notepad.exe" "`"$SfcReportPath`""
+    } else {
+        Write-Log $Translations[$Script:CurrentLang].SfcEmpty
+    }
+})
+
+$BtnWinClean.Add_Click({ 
+    if (Confirm-Action $Translations[$Script:CurrentLang].MsgWinClean) { 
+        Invoke-NativeTool "powershell.exe" "-NoProfile -NoExit -Command `"$ConsoleSetup DISM.exe /Online /Cleanup-Image /StartComponentCleanup`"" 
+    } 
+})
+
+# v0.14 : CHKDSK (nouveau) — vérifie le disque système C: dans une console admin.
+$BtnChkdsk.Add_Click({ 
+    if (Confirm-Action $Translations[$Script:CurrentLang].MsgChkdsk) { 
+        Invoke-NativeTool "powershell.exe" "-NoProfile -NoExit -Command `"$ConsoleSetup chkdsk.exe C: ; Write-Host '`r`nSi des erreurs ont ete detectees, relancez avec : chkdsk C: /F /R' -ForegroundColor Yellow; Write-Host '⚠️ Une analyse au prochain redemarrage peut etre planifiee.' -ForegroundColor Cyan`"" 
+    } 
+})
+
+$BtnWinsock.Add_Click({ 
+    if (Confirm-Action $Translations[$Script:CurrentLang].MsgWinsock) { 
+        Invoke-NativeTool "powershell.exe" "-NoProfile -NoExit -Command `"$ConsoleSetup netsh winsock reset; Write-Host '`r`nCatalogue Winsock reinitialise.' -ForegroundColor Green; Write-Host '⚠️ Redemarrage du PC requis.' -ForegroundColor Red`"" 
+    } 
+})
+
+$BtnIpReset.Add_Click({ 
+    if (Confirm-Action $Translations[$Script:CurrentLang].MsgIpReset) { 
+        Invoke-NativeTool "powershell.exe" "-NoProfile -NoExit -Command `"$ConsoleSetup netsh int ip reset; Write-Host '`r`nProtocole TCP/IP reinitialise.' -ForegroundColor Green; Write-Host '⚠️ Redemarrage du PC requis.' -ForegroundColor Red`"" 
+    } 
+})
+
+$BtnFlushDns.Add_Click({ 
+    if (Confirm-Action $Translations[$Script:CurrentLang].MsgFlushDns) { 
+        Invoke-NativeTool "powershell.exe" "-NoProfile -NoExit -Command `"$ConsoleSetup ipconfig /flushdns; Write-Host '`r`nCache DNS vide avec succes.' -ForegroundColor Green`"" 
+    } 
+})
+
+# Outils natifs système Windows
+$BtnSysRestore.Add_Click({ if (Confirm-Action $Translations[$Script:CurrentLang].MsgSysRestore) { Invoke-NativeTool "SystemPropertiesProtection.exe" "" } })
+$BtnCleanMgr.Add_Click({ if (Confirm-Action $Translations[$Script:CurrentLang].MsgCleanMgr) { Invoke-NativeTool "cleanmgr.exe" "" } })
+
+$BtnOptDrive.Add_Click({ if (Confirm-Action $Translations[$Script:CurrentLang].MsgOptDrive) { Invoke-NativeTool "dfrgui.exe" "" } })
+$BtnSysInfo.Add_Click({ if (Confirm-Action $Translations[$Script:CurrentLang].MsgSysInfo) { Invoke-NativeTool "msinfo32.exe" "" } })
+$BtnDevMgr.Add_Click({ if (Confirm-Action $Translations[$Script:CurrentLang].MsgDevMgr) { Invoke-NativeTool "devmgmt.msc" "" } })
+$BtnDiskMgr.Add_Click({ if (Confirm-Action $Translations[$Script:CurrentLang].MsgDiskMgr) { Invoke-NativeTool "diskmgmt.msc" "" } })
+$BtnDxDiag.Add_Click({ if (Confirm-Action $Translations[$Script:CurrentLang].MsgDxDiag) { Invoke-NativeTool "dxdiag.exe" "" } })
+$BtnMemDiag.Add_Click({ if (Confirm-Action $Translations[$Script:CurrentLang].MsgMemDiag) { Invoke-NativeTool "mdsched.exe" "" } })
+$BtnEventVwr.Add_Click({ if (Confirm-Action $Translations[$Script:CurrentLang].MsgEventVwr) { Invoke-NativeTool "eventvwr.msc" "" } })
+$BtnResMon.Add_Click({ if (Confirm-Action $Translations[$Script:CurrentLang].MsgResMon) { Invoke-NativeTool "resmon.exe" "" } })
+$BtnPerfDiag.Add_Click({ if (Confirm-Action $Translations[$Script:CurrentLang].MsgPerfDiag) { Invoke-NativeTool "perfmon.exe" "/report" } })
+$BtnReliability.Add_Click({ if (Confirm-Action $Translations[$Script:CurrentLang].MsgReliability) { Invoke-NativeTool "perfmon.exe" "/rel" } })
+$BtnMsConfig.Add_Click({ if (Confirm-Action $Translations[$Script:CurrentLang].MsgMsConfig) { Invoke-NativeTool "msconfig.exe" "" } })
+$BtnFirewall.Add_Click({ if (Confirm-Action $Translations[$Script:CurrentLang].MsgFirewall) { Invoke-NativeTool "wf.msc" "" } })
+$BtnNetConn.Add_Click({ if (Confirm-Action $Translations[$Script:CurrentLang].MsgNetConn) { Invoke-NativeTool "ncpa.cpl" "" } })
+
+# v0.14 : Services (nouveau) — console des services Windows.
+$BtnServices.Add_Click({ if (Confirm-Action $Translations[$Script:CurrentLang].MsgServices) { Invoke-NativeTool "services.msc" "" } })
+
+# v0.14 : Gestion de l'ordinateur (nouveau) — console tout-en-un.
+$BtnCompMgmt.Add_Click({ if (Confirm-Action $Translations[$Script:CurrentLang].MsgCompMgmt) { Invoke-NativeTool "compmgmt.msc" "" } })
+
+$BtnMRT.Add_Click({ if (Confirm-Action $Translations[$Script:CurrentLang].MsgMRT) { Invoke-NativeTool "mrt.exe" "" } })
+$BtnUserPass.Add_Click({ if (Confirm-Action $Translations[$Script:CurrentLang].MsgUserPass) { Invoke-NativeTool "netplwiz.exe" "" } })
+$BtnPower.Add_Click({ if (Confirm-Action $Translations[$Script:CurrentLang].MsgPower) { Invoke-NativeTool "control.exe" "powercfg.cpl" } })
+
+# --- BOUTON ABOUT ---
+$BtnAbout.Add_Click({
+    $L = $Translations[$Script:CurrentLang]
+    [System.Windows.Forms.MessageBox]::Show($L.AboutBody, $L.AboutTitle, [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+})
+
+# Nettoyage à la fermeture (log de session)
+$Form.Add_FormClosing({
+    $L = $Translations[$Script:CurrentLang]
+    Write-Log $L.LogEnd
+})
+
+# Onglet sélectionné par défaut à l'ouverture
+$TabControl.SelectedTab = $TabDiag
+
+[void]$Form.ShowDialog()
