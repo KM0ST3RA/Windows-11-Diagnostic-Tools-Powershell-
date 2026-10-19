@@ -56,3 +56,18 @@ L'application sert également de panneau de contrôle rapide vers les utilitaire
 
 * Informations système (msinfo32) : Vue d'ensemble matérielle et logicielle complète du poste.
 
+====================================================================
+Captures écran : 
+
+<img width="406" height="173" alt="image" src="https://github.com/user-attachments/assets/24fea5f3-46cf-4d73-8cc3-4eac7f51fc9e" />
+
+<img width="886" height="713" alt="image" src="https://github.com/user-attachments/assets/b0ae1c89-aa14-4e84-965a-91ecda091572" />
+
+<img width="886" height="713" alt="image" src="https://github.com/user-attachments/assets/822c173d-40eb-4053-8ef7-4aadd2328846" />
+
+<img width="886" height="713" alt="image" src="https://github.com/user-attachments/assets/b3614733-9b03-45bb-843c-6b38836b6ebb" />
+
+
+
+
+
