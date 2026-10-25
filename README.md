@@ -67,6 +67,9 @@ Captures écran :
 
 <img width="886" height="713" alt="image" src="https://github.com/user-attachments/assets/b3614733-9b03-45bb-843c-6b38836b6ebb" />
 
+<img width="899" height="899" alt="image" src="https://github.com/user-attachments/assets/29058a1d-34ff-4f00-a8dd-266b3cba5e16" />
+
+
 
 
 
