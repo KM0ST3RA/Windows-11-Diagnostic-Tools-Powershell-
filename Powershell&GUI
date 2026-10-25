@@ -1,10 +1,7 @@
 # ==============================================================================
 # Script : Hub d'Outils de Diagnostic & Réparation Système Windows Multi-langues
-# Version : 0.15.0
-#  - Nouvel onglet "Réseau & Internet" (Winsock + TCP/IP + FlushDns + NetConn)
-#  - Onglet "Nettoyage" réduit à 3 boutons
-#  - Onglet "Avancés" réduit à 6 boutons
-#  - Traductions noms d'onglets mises à jour (FR/EN/DE/IT/ES)
+# Version : 0.16.6
+#  - Correction de la résolution du chemin pour powershell.exe (System32\WindowsPowerShell\v1.0)
 # Créé avec l'aide des IA Google Gemini et Mistral Vibe
 # Exécution : Nécessite les privilèges Administrateur pour certains outils
 # ==============================================================================
@@ -12,6 +9,33 @@
 # ======================================================================
 # INITIALISATION DU SCRIPT
 # ======================================================================
+
+# Trace minimale pour récupérer les erreurs du processus ADMIN relancé.
+$Script:StartupLogPath = Join-Path $env:TEMP 'WindowsMaintenanceHub-startup.log'
+function Write-StartupLog {
+    param ([string]$Message)
+    try {
+        Add-Content -LiteralPath $Script:StartupLogPath -Value ("{0:yyyy-MM-dd HH:mm:ss.fff} {1}" -f (Get-Date), $Message) -Encoding UTF8
+    } catch {}
+}
+
+trap {
+    $StartupError = $_
+    $ErrorDetails = $StartupError | Format-List * -Force | Out-String
+    Write-StartupLog ("FATAL startup error:`r`n" + $ErrorDetails)
+    try {
+        $Line = $StartupError.InvocationInfo.ScriptLineNumber
+        [void][System.Windows.Forms.MessageBox]::Show(
+            ("Le démarrage a échoué. Consultez le journal :`r`n$Script:StartupLogPath`r`n`r`nLigne $Line : $($StartupError.Exception.Message)"),
+            'Windows Maintenance Hub',
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Error
+        )
+    } catch {}
+    break
+}
+
+Write-StartupLog ("Script start; PowerShell $($PSVersionTable.PSVersion); path=$PSCommandPath")
 
 # ÉTAPE A : Charger obligatoirement les outils graphiques en PREMIER
 Add-Type -AssemblyName System.Windows.Forms
@@ -50,7 +74,7 @@ if (-not $IsAdmin) {
     $Label.Text = "Choose your execution mode :`r`n"
     $Label.Location = New-Object System.Drawing.Point(20, 20)
     $Label.Size = New-Object System.Drawing.Size(380, 40)
-    $Label.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+    $Label.Font = New-Object System.Drawing.Font("Segoe UI Emoji", 10, [System.Drawing.FontStyle]::Bold)
     $Label.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
     $ChoiceForm.Controls.Add($Label)
 
@@ -60,7 +84,7 @@ if (-not $IsAdmin) {
     $BtnChoiceAdmin.Text = "ADMIN"
     $BtnChoiceAdmin.Location = New-Object System.Drawing.Point(40, 80)
     $BtnChoiceAdmin.Size = New-Object System.Drawing.Size(150, 40)
-    $BtnChoiceAdmin.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+    $BtnChoiceAdmin.Font = New-Object System.Drawing.Font("Segoe UI Emoji", 10, [System.Drawing.FontStyle]::Bold)
     $BtnChoiceAdmin.BackColor = [System.Drawing.Color]::FromArgb(220, 53, 69)
     $BtnChoiceAdmin.ForeColor = [System.Drawing.Color]::White
     $BtnChoiceAdmin.FlatStyle = "Flat"
@@ -72,7 +96,7 @@ if (-not $IsAdmin) {
     $BtnChoiceUser.Text = "USER"
     $BtnChoiceUser.Location = New-Object System.Drawing.Point(210, 80)
     $BtnChoiceUser.Size = New-Object System.Drawing.Size(150, 40)
-    $BtnChoiceUser.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+    $BtnChoiceUser.Font = New-Object System.Drawing.Font("Segoe UI Emoji", 10, [System.Drawing.FontStyle]::Bold)
     $BtnChoiceUser.BackColor = [System.Drawing.Color]::FromArgb(40, 167, 69)
     $BtnChoiceUser.ForeColor = [System.Drawing.Color]::White
     $BtnChoiceUser.FlatStyle = "Flat"
@@ -83,18 +107,25 @@ if (-not $IsAdmin) {
     [void]$ChoiceForm.ShowDialog()
 
     if ($Script:UserDecision -eq "Admin") {
-        $ResizeScript = {
-            $H = (Get-Host).UI.RawUI
-            $H.WindowSize = New-Object System.Management.Automation.Host.Size(80,25)
-            $H.BufferSize = New-Object System.Management.Automation.Host.Size(80,1000)
-        }.ToString()
-
-        $EncodedCommand = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes("$ResizeScript; & '$PSCommandPath'"))
-        # v0.14 : gestion de l'annulation UAC (refus d'élévation) au lieu d'un Exit silencieux
+        $PowerShellExe = Join-Path $PSHOME 'powershell.exe'
+        if (-not (Test-Path -LiteralPath $PowerShellExe)) {
+            $PowerShellExe = Join-Path $PSHOME 'pwsh.exe'
+        }
+        $ArgumentLine = '-NoProfile -STA -ExecutionPolicy Bypass -File "' + $PSCommandPath + '"'
         try {
-            Start-Process powershell -ArgumentList "-NoProfile -ExecutionPolicy Bypass -EncodedCommand $EncodedCommand" -Verb RunAs -ErrorAction Stop
+            $PolicySummary = Get-ExecutionPolicy -List | Out-String
+            Set-Content -LiteralPath $Script:StartupLogPath -Value ("{0:yyyy-MM-dd HH:mm:ss.fff} ADMIN relaunch requested; executable=$PowerShellExe; script=$PSCommandPath`r`nExecution policies:`r`n$PolicySummary" -f (Get-Date)) -Encoding UTF8
+            $ElevatedProcess = Start-Process -FilePath $PowerShellExe -ArgumentList $ArgumentLine -Verb RunAs -PassThru -ErrorAction Stop
+            Write-StartupLog "ADMIN process started; PID=$($ElevatedProcess.Id)"
+            Start-Sleep -Milliseconds 1200
+            $ElevatedProcess.Refresh()
+            if ($ElevatedProcess.HasExited -and $ElevatedProcess.ExitCode -ne 0) {
+                Write-StartupLog "ADMIN process exited immediately; exit code=$($ElevatedProcess.ExitCode)"
+                [System.Windows.Forms.MessageBox]::Show("Le processus ADMIN s'est arrêté au démarrage.`r`nConsultez le journal : $($Script:StartupLogPath)", "Launch Mode", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
+            }
         } catch {
-            [System.Windows.Forms.MessageBox]::Show("Elevation refused / Élevation refusée.", "Launch Mode", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+            Write-StartupLog ("ADMIN relaunch failed:`r`n" + ($_ | Format-List * -Force | Out-String))
+            [System.Windows.Forms.MessageBox]::Show("Élévation refusée ou échec du lancement.`r`nDétails : $($Script:StartupLogPath)`r`n`r`n$($_.Exception.Message)", "Launch Mode", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
         }
         Exit
     }
@@ -105,8 +136,6 @@ if (-not $IsAdmin) {
 
 # ----------------------------------------------------------------------
 # Dictionnaire des traductions (Centralisation FR / EN / DE / IT / ES)
-# v0.14 : nouveau MemDiagHint, BtnServices, BtnCompMgmt, BtnChkdsk
-#         + Msg associées ; AboutBody IT corrigé
 # ----------------------------------------------------------------------
 $Translations = @{
     FR = @{
@@ -153,9 +182,9 @@ $Translations = @{
         MsgScan      = "Ce diagnostic vérifie l'image système sans la modifier.`n`nVoulez-vous lancer l'analyse dans une console ?"
         MsgRestore   = "Répare automatiquement les fichiers système corrompus.`n`nVoulez-vous lancer la réparation dans une console ?"
         MsgSysRestore= "Ouvre l'interface de Windows pour gérer et créer des points de restauration.`n`nOuvrir la Protection du système ?"
-        MsgChkdsk    = "Vérifie l'intégrité du système de fichiers du disque système (C:).`n⚠️ Une analyse au redémarrage sera proposée si le disque est en usage.`n`nLancer CHKDSK dans une console ?"
+        MsgChkdsk    = "Vérifie le système de fichiers de C: en lecture seule.`n⚠️ Cette commande ne répare pas les erreurs et ne planifie pas de réparation au redémarrage.`n`nLancer la vérification ?"
         MsgCleanMgr  = "Ouvre l'outil natif de nettoyage de disque Windows.`n`nContinuer ?"
-        MsgWinClean  = "Nettoie en profondeur le dossier 'WinSxS'.`n⚠️ Vous ne pourrez plus désinstaller les dernières mises à jour.`n`nContinuer ?"
+        MsgWinClean  = "Nettoie les composants Windows remplacés pour réduire WinSxS. L'opération peut durer plusieurs minutes. La commande n'utilise pas /ResetBase.`n`nContinuer ?"
         MsgOptDrive  = "Ouvre l'outil natif pour vérifier l'état du TRIM (SSD) et défragmenter vos disques.`n`nOuvrir l'Optimiseur de lecteur ?"
         MsgWinsock   = "Répare le catalogue Winsock (utile si le service SENS ou le réseau bloque).`n⚠️ Un redémarrage du PC sera nécessaire.`n`nExécuter la réinitialisation ?"
         MsgIpReset   = "Réinitialise le protocole TCP/IP à son état par défaut.`n⚠️ Peut effacer vos configurations d'IP fixe.`n⚠️ Un redémarrage du PC sera nécessaire.`n`nExécuter la réinitialisation ?"
@@ -184,7 +213,7 @@ $Translations = @{
         SfcRunning   = "[INFO] SFC lancé en arrière-plan. Le rapport sera détecté à la fin."
         ToolNotFound = "[ERREUR] Impossible de lancer l'outil : %TOOL% introuvable ou inaccessible."
         AboutTitle   = "À propos"
-        AboutBody    = "Windows Maintenance Hub`r`nTous les outils de ce hub sont nativement intégrés à Windows.`r`n`r`nVersion 0.15.0`r`n`r`nOpen Source`r`nCréé avec l'aide de Google Gemini & Mistral Vibe.`r`nOS : Windows 10 & 11.`r`n2026/08"
+        AboutBody    = "Windows Maintenance Hub`r`nTous les outils de ce hub sont nativement intégrés à Windows.`r`n`r`nVersion 0.16.6`r`n`r`nOpen Source`r`nCréé avec l'aide de Google Gemini & Mistral Vibe.`r`nOS : Windows 10 & 11.`r`n2026/08"
     }
     EN = @{
         Title        = "Windows Maintenance Hub"
@@ -230,9 +259,9 @@ $Translations = @{
         MsgScan      = "This diagnostic checks the system image without modifying it.`n`nStart the scan in a console?"
         MsgRestore   = "Automatically repairs corrupted system files.`n`nStart the repair in a console?"
         MsgSysRestore= "Opens the Windows interface to manage and create restore points.`n`nOpen System Protection?"
-        MsgChkdsk    = "Checks the file system integrity of the system disk (C:).`n⚠️ A reboot scan may be offered if the disk is in use.`n`nLaunch CHKDSK in a console?"
+        MsgChkdsk    = "Checks the C: file system in read-only mode.`n⚠️ This command does not repair errors or schedule a repair at restart.`n`nRun the check?"
         MsgCleanMgr  = "Opens the native Windows Disk Cleanup tool.`n`nContinue?"
-        MsgWinClean  = "Deeply cleans the 'WinSxS' folder.`n⚠️ You will no longer be able to uninstall recent updates.`n`nContinue?"
+        MsgWinClean  = "Cleans superseded Windows components to reduce WinSxS. This can take several minutes. The command does not use /ResetBase.`n`nContinue?"
         MsgOptDrive  = "Opens the native tool to check TRIM (SSD) status and defrag drives.`n`nOpen Drive Optimizer?"
         MsgWinsock   = "Repairs the Winsock catalog (useful for SENS or network issues).`n⚠️ System restart required.`n`nRun reset?"
         MsgIpReset   = "Resets TCP/IP protocol to default state.`n⚠️ May clear static IP settings.`n⚠️ System restart required.`n`nRun reset?"
@@ -261,7 +290,7 @@ $Translations = @{
         SfcRunning   = "[INFO] SFC launched in the background. Report will be detected on completion."
         ToolNotFound = "[ERROR] Could not launch tool: %TOOL% not found or inaccessible."
         AboutTitle   = "About"
-        AboutBody    = "Windows Maintenance Hub`r`nAll tools in this hub are natively built into Windows.`r`n`r`nVersion 0.15.0`r`n`r`nOpen Source`r`nCreated with the help of Google Gemini & Mistral Vibe.`r`nOS : Windows 10 & 11.`r`n2026/08"
+        AboutBody    = "Windows Maintenance Hub`r`nAll tools in this hub are natively built into Windows.`r`n`r`nVersion 0.16.6`r`n`r`nOpen Source`r`nCreated with the help of Google Gemini & Mistral Vibe.`r`nOS : Windows 10 & 11.`r`n2026/08"
     }
     DE = @{
         Title        = "Windows Wartungs-Hub"
@@ -307,9 +336,9 @@ $Translations = @{
         MsgScan      = "Diese Diagnose überprüft das Systemabbild, ohne es zu ändern.`n`nScan in einer Konsole starten?"
         MsgRestore   = "Repariert automatisch beschädigte Systemdateien.`n`nReparatur in einer Konsole starten?"
         MsgSysRestore= "Öffnet die Windows-Oberfläche zum Verwalten von Wiederherstellungspunkten.`n`nComputerschutz öffnen?"
-        MsgChkdsk    = "Prüft die Integrität des Dateisystems der Systempartition (C:).`n⚠️ Bei belegtem Datenträger wird eine Prüfung beim Neustart angeboten.`n`nCHKDSK in einer Konsole starten?"
+        MsgChkdsk    = "Prüft das Dateisystem von C: im schreibgeschützten Modus.`n⚠️ Dieser Befehl repariert keine Fehler und plant keine Prüfung beim Neustart.`n`nPrüfung starten?"
         MsgCleanMgr  = "Öffnet das native Datenträgerbereinigungs-Tool.`n`nFortfahren?"
-        MsgWinClean  = "Bereinigt den 'WinSxS'-Ordner.`n⚠️ Aktuelle Updates können nicht mehr deinstalliert werden.`n`nFortfahren?"
+        MsgWinClean  = "Entfernt ersetzte Windows-Komponenten, um WinSxS zu verkleinern. Das kann mehrere Minuten dauern. Der Befehl verwendet nicht /ResetBase.`n`nFortfahren?"
         MsgOptDrive  = "Öffnet das native Tool zur Überprüfung des TRIM-Status (SSD).`n`nLaufwerksoptimierung öffnen?"
         MsgWinsock   = "Repariert den Winsock-Katalog.`n⚠️ Ein Neustart ist erforderlich.`n`nZurücksetzen ausführen?"
         MsgIpReset   = "Setzt das TCP/IP-Protokoll zurück.`n⚠️ Kann statische IP-Einstellungen löschen.`n⚠️ Neustart erforderlich.`n`nZurücksetzen ausführen?"
@@ -338,7 +367,7 @@ $Translations = @{
         SfcRunning   = "[INFO] SFC im Hintergrund gestartet. Bericht wird nach Abschluss erkannt."
         ToolNotFound = "[FEHLER] Tool konnte nicht gestartet werden: %TOOL% nicht gefunden oder nicht zugänglich."
         AboutTitle   = "Über"
-        AboutBody    = "Windows Wartungs-Hub`r`nAlle Tools in diesem Hub sind nativ in Windows integriert.`r`n`r`nVersion 0.15.0`r`n`r`nOpen Source`r`nErstellt mit Hilfe von Google Gemini & Mistral Vibe.`r`nOS : Windows 10 & 11.`r`n2026/08"
+        AboutBody    = "Windows Wartungs-Hub`r`nAlle Tools in diesem Hub sind nativ in Windows integriert.`r`n`r`nVersion 0.16.6`r`n`r`nOpen Source`r`nErstellt mit Hilfe von Google Gemini & Mistral Vibe.`r`nOS : Windows 10 & 11.`r`n2026/08"
     }
     IT = @{
         Title        = "Hub di Manutenzione Windows"
@@ -384,9 +413,9 @@ $Translations = @{
         MsgScan      = "Questa diagnostica verifica l'immagine di sistema senza modificarla.`n`nAvviare la scansione in una console?"
         MsgRestore   = "Ripara automaticamente i file di sistema corrotti.`n`nAvviare la riparazione in una console?"
         MsgSysRestore= "Apre l'interfaccia di Windows per gestire i punti di ripristino.`n`nAprire la Protezione di sistema?"
-        MsgChkdsk    = "Verifica l'integrità del file system del disco di sistema (C:).`n⚠️ Se il disco è in uso, verrà proposta una scansione al riavvio.`n`nAvviare CHKDSK in una console?"
+        MsgChkdsk    = "Verifica il file system di C: in modalità di sola lettura.`n⚠️ Questo comando non ripara gli errori e non pianifica una riparazione al riavvio.`n`nAvviare la verifica?"
         MsgCleanMgr  = "Apre lo strumento nativo di Pulizia disco.`n`nContinuare?"
-        MsgWinClean  = "Pulisce a fondo la cartella 'WinSxS'.`n⚠️ Non potrai disinstallare gli ultimi aggiornamenti.`n`nContinuare?"
+        MsgWinClean  = "Pulisce i componenti Windows sostituiti per ridurre WinSxS. L'operazione può richiedere alcuni minuti. Il comando non usa /ResetBase.`n`nContinuare?"
         MsgOptDrive  = "Apre lo strumento nativo per verificare il TRIM (SSD) e deframmentare.`n`nAprire l'Ottimizzatore unità?"
         MsgWinsock   = "Ripara il catalogo Winsock.`n⚠️ Sarà necessario riavviare il PC.`n`nEseguire il ripristino?"
         MsgIpReset   = "Ripristina il protocollo TCP/IP allo stato iniziale.`n⚠️ Può cancellare le configurazioni IP statiche.`n⚠️ Richiede il riavvio del PC.`n`nEseguire il ripristino?"
@@ -415,7 +444,7 @@ $Translations = @{
         SfcRunning   = "[INFO] SFC avviato in background. Il report sarà rilevato al termine."
         ToolNotFound = "[ERRORE] Impossibile avviare lo strumento: %TOOL% non trovato o inaccessibile."
         AboutTitle   = "Informazioni"
-        AboutBody    = "Hub di Manutenzione Windows`r`nTutti gli strumenti di questo hub sono nativamente integrati in Windows.`r`n`r`nVersione 0.15.0`r`n`r`nOpen Source`r`nCreato con l'aiuto di Google Gemini & Mistral Vibe.`r`nOS : Windows 10 & 11.`r`n2026/08"
+        AboutBody    = "Hub di Manutenzione Windows`r`nTutti gli strumenti di questo hub sono nativamente integrati in Windows.`r`n`r`nVersione 0.16.6`r`n`r`nOpen Source`r`nCreato con l'aiuto di Google Gemini & Mistral Vibe.`r`nOS : Windows 10 & 11.`r`n2026/08"
     }
     ES = @{
         Title        = "Hub de Mantenimiento de Windows"
@@ -461,9 +490,9 @@ $Translations = @{
         MsgScan      = "Este diagnóstico verifica la imagen del sistema sin modificarla.`n`n¿Iniciar el análisis en consola?"
         MsgRestore   = "Repara automáticamente los archivos del sistema corruptos.`n`n¿Iniciar la reparación en consola?"
         MsgSysRestore= "Abre la interfaz de Windows para administrar puntos de restauración.`n`n¿Abrir Protección del sistema?"
-        MsgChkdsk    = "Verifica la integridad del sistema de archivos del disco del sistema (C:).`n⚠️ Si el disco está en uso, se ofrecerá un análisis al reiniciar.`n`n¿Iniciar CHKDSK en consola?"
+        MsgChkdsk    = "Comprueba el sistema de archivos de C: en modo de solo lectura.`n⚠️ Este comando no repara errores ni programa una reparación al reiniciar.`n`n¿Iniciar la comprobación?"
         MsgCleanMgr  = "Abre el Liberador de espacio en disco nativo.`n`n¿Continuar?"
-        MsgWinClean  = "Limpia en profundidad la carpeta 'WinSxS'.`n⚠️ No podrá desinstalar actualizaciones recientes.`n`n¿Continuar?"
+        MsgWinClean  = "Limpia componentes de Windows reemplazados para reducir WinSxS. Puede tardar varios minutos. El comando no usa /ResetBase.`n`n¿Continuar?"
         MsgOptDrive  = "Abre la herramienta nativa para verificar el TRIM (SSD) y desfragmentar.`n`n¿Abrir Optimizador de unidades?"
         MsgWinsock   = "Repara el catálogo Winsock.`n⚠️ Requiere reiniciar el equipo.`n`n¿Ejecutar el restablecimiento?"
         MsgIpReset   = "Restablece el protocolo TCP/IP a su estado predeterminado.`n⚠️ Puede borrar la configuración de IP estática.`n⚠️ Requiere reiniciar el equipo.`n`n¿Ejecutar el restablecimiento?"
@@ -471,7 +500,7 @@ $Translations = @{
         MsgSysInfo   = "Muestra información detallada sobre hardware y BIOS.`n`n¿Abrir Msinfo32?"
         MsgDevMgr    = "Abre el Administrador de dispositivos para comprobar controladores.`n`n¿Continuar?"
         MsgDiskMgr   = "Abre la Administración de discos para comprobar particiones.`n`n¿Continuar?"
-        MsgDxDiag    = "Analiza componentes gráficos, de audio y controladores DirectX.`n`n¿Iniciar DxDiag?"
+        MsgDxDiag    = "Analiza componentes gráficos, audio y controladores DirectX.`n`n¿Iniciar DxDiag?"
         MsgMemDiag   = "Verifica los defectos físicos de la RAM (requiere reinicio).`n`n¿Abrir herramienta?"
         MsgEventVwr  = "Abre el Visor de eventos para consultar registros del sistema.`n`n¿Continuar?"
         MsgResMon    = "Abre el Monitor de recursos (CPU, RAM, Disco, Red en tiempo real).`n`n¿Abrir herramienta?"
@@ -486,28 +515,56 @@ $Translations = @{
         MsgServices  = "Abre la consola de Servicios de Windows (iniciar/detener servicios).`n`n¿Continuar?"
         MsgCompMgmt  = "Abre Administración de equipos (discos, dispositivos, eventos, carpetas compartidas).`n`n¿Continuar?"
         LogStart     = "[INICIO] Iniciando herramienta nativa..."
-        LogEnd       = "[FIN] Proceso completado o interfaz cerrada."
+        LogEnd       = "[FIN] Proceso completado ou interfaccia chiusa."
         SfcExtracted = "[INFO] Detalles de SFC extraídos a %LOGPATH%."
-        SfcEmpty     = "[INFO] Sin detalles de SFC que extraer (archivo vacío o ausente)."
+        SfcEmpty     = "[INFO] Sin detalles de SFC que extraer (archivo vacío ou ausente)."
         SfcRunning   = "[INFO] SFC iniciado en segundo plano. El informe se detectará al finalizar."
         ToolNotFound = "[ERROR] No se pudo iniciar la herramienta: %TOOL% no encontrado o inaccesible."
         AboutTitle   = "Acerca de"
-        AboutBody    = "Hub de Mantenimiento de Windows`r`nTodas las herramientas de este hub están integradas nativamente en Windows.`r`n`r`nVersión 0.15.0`r`n`r`nOpen Source`r`nCreado con la ayuda de Google Gemini & Mistral Vibe.`r`nOS : Windows 10 & 11.`r`n2026/08"
+        AboutBody    = "Hub de Mantenimiento de Windows`r`nTodas las herramientas de este hub están integradas nativamente en Windows.`r`n`r`nVersion 0.16.6`r`n`r`nOpen Source`r`nCreado con la ayuda de Google Gemini & Mistral Vibe.`r`nOS : Windows 10 & 11.`r`n2026/08"
     }
 }
+
+# Texte du point de restauration
+$Translations.FR['BtnRestorePoint'] = "Créer un point de restauration"
+$Translations.FR['MsgRestorePoint'] = "Créer maintenant un point de restauration système ?"
+$Translations.FR['RestorePointCreated'] = "Point de restauration créé."
+$Translations.FR['RestorePointFailed'] = "Windows n'a pas pu créer le point. La Protection du système est peut-être désactivée ou un point a déjà été créé dans les dernières 24 heures."
+$Translations.FR['MsgContinueWithoutRestorePoint'] = "Le point de restauration n'a pas été créé. Voulez-vous continuer sans ce filet de sécurité ?"
+
+$Translations.EN['BtnRestorePoint'] = "Create a restore point"
+$Translations.EN['MsgRestorePoint'] = "Create a Windows system restore point now?"
+$Translations.EN['RestorePointCreated'] = "Restore point created."
+$Translations.EN['RestorePointFailed'] = "Windows could not create the restore point. System Protection may be disabled, or a point may already have been created in the last 24 hours."
+$Translations.EN['MsgContinueWithoutRestorePoint'] = "The restore point was not created. Continue without this safeguard?"
+
+$Translations.DE['BtnRestorePoint'] = "Wiederherstellungspunkt erstellen"
+$Translations.DE['MsgRestorePoint'] = "Jetzt einen Windows-Systemwiederherstellungspunkt erstellen?"
+$Translations.DE['RestorePointCreated'] = "Wiederherstellungspunkt erstellt."
+$Translations.DE['RestorePointFailed'] = "Windows konnte den Wiederherstellungspunkt nicht erstellen. Der Computerschutz ist möglicherweise deaktiviert oder innerhalb der letzten 24 Stunden wurde bereits ein Punkt erstellt."
+$Translations.DE['MsgContinueWithoutRestorePoint'] = "Der Wiederherstellungspunkt wurde nicht erstellt. Ohne diesen Schutz fortfahren?"
+
+$Translations.IT['BtnRestorePoint'] = "Crea un punto di ripristino"
+$Translations.IT['MsgRestorePoint'] = "Creare ora un punto di ripristino del sistema Windows?"
+$Translations.IT['RestorePointCreated'] = "Punto di ripristino creato."
+$Translations.IT['RestorePointFailed'] = "Windows non è riuscito a creare il punto. La Protezione sistema potrebbe essere disattivata oppure potrebbe essere già stato creato un punto nelle ultime 24 ore."
+$Translations.IT['MsgContinueWithoutRestorePoint'] = "Il punto di ripristino non è stato creato. Continuare senza questa protezione?"
+
+$Translations.ES['BtnRestorePoint'] = "Crear un punto de restauración"
+$Translations.ES['MsgRestorePoint'] = "¿Crear ahora un punto de restauración del sistema de Windows?"
+$Translations.ES['RestorePointCreated'] = "Punto de restauración creado."
+$Translations.ES['RestorePointFailed'] = "Windows no pudo crear el punto. Es posible que Protección del sistema esté desactivada o que ya se haya creado un punto en las últimas 24 horas."
+$Translations.ES['MsgContinueWithoutRestorePoint'] = "No se creó el punto de restauración. ¿Continuar sin esta protección?"
 
 $Script:CurrentLang = "EN"
 
 # ----------------------------------------------------------------------
 # 2. Création de la Fenêtre Principale & Boutons
 # ----------------------------------------------------------------------
-# (EnableVisualStyles a déjà été appelé tout en haut, AVANT les formulaires)
-
 $Form = New-Object System.Windows.Forms.Form
 $Form.Text = $Translations[$Script:CurrentLang].Title
-# v0.15 : élargi à 900x720 pour les 6 onglets + bandeau supérieur aéré
-$Form.Size = New-Object System.Drawing.Size(900, 720)
-$Form.MinimumSize = New-Object System.Drawing.Size(900, 720)
+$Form.Size = New-Object System.Drawing.Size(950, 720) #taille de la fenetre globale
+$Form.MinimumSize = New-Object System.Drawing.Size(950, 720) #taille de la fenetre globale
 $Form.StartPosition = "CenterScreen"
 $Form.BackColor = [System.Drawing.Color]::FromArgb(243, 243, 243)
 $Form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedSingle
@@ -516,7 +573,7 @@ $Form.MaximizeBox = $false
 # --- Bandeau Supérieur ---
 $LabelTitre = New-Object System.Windows.Forms.Label
 $LabelTitre.Text = $Translations[$Script:CurrentLang].Header
-$LabelTitre.Font = New-Object System.Drawing.Font("Segoe UI", 14, [System.Drawing.FontStyle]::Bold)
+$LabelTitre.Font = New-Object System.Drawing.Font("Segoe UI Emoji", 14, [System.Drawing.FontStyle]::Bold)
 $LabelTitre.Size = New-Object System.Drawing.Size(450, 30)
 $LabelTitre.Location = New-Object System.Drawing.Point(20, 15)
 $Form.Controls.Add($LabelTitre)
@@ -526,7 +583,7 @@ $ComboLang = New-Object System.Windows.Forms.ComboBox
 $ComboLang.Location = New-Object System.Drawing.Point(660, 17)
 $ComboLang.Size = New-Object System.Drawing.Size(100, 30)
 $ComboLang.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
-$ComboLang.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+$ComboLang.Font = New-Object System.Drawing.Font("Segoe UI Emoji", 10, [System.Drawing.FontStyle]::Bold)
 [void]$ComboLang.Items.AddRange(@("EN", "FR", "DE", "IT", "ES"))
 $ComboLang.SelectedItem = $Script:CurrentLang
 $Form.Controls.Add($ComboLang)
@@ -536,28 +593,28 @@ $BtnAbout = New-Object System.Windows.Forms.Button
 $BtnAbout.Text = "?"
 $BtnAbout.Location = New-Object System.Drawing.Point(770, 16)
 $BtnAbout.Size = New-Object System.Drawing.Size(30, 25)
-$BtnAbout.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+$BtnAbout.Font = New-Object System.Drawing.Font("Segoe UI Emoji", 10, [System.Drawing.FontStyle]::Bold)
 $BtnAbout.FlatStyle = "Flat"
 $BtnAbout.FlatAppearance.BorderSize = 1
 $BtnAbout.BackColor = [System.Drawing.Color]::White
 $Form.Controls.Add($BtnAbout)
 
-# --- SplitContainer ---
+# --- SplitContainer --- fenêtre noire/dos
 $SplitContainer = New-Object System.Windows.Forms.SplitContainer
 $SplitContainer.Orientation = [System.Windows.Forms.Orientation]::Horizontal
 $SplitContainer.Location = New-Object System.Drawing.Point(20, 60)
 $SplitContainer.Size = New-Object System.Drawing.Size(($Form.ClientSize.Width - 40), ($Form.ClientSize.Height - 80))
-$SplitContainer.SplitterDistance = 480
-$SplitContainer.Panel1MinSize = 460
+$SplitContainer.SplitterDistance = 430 #valeur haut
+$SplitContainer.Panel1MinSize = 430
 $SplitContainer.Panel2MinSize = 100
-# v0.14 : 480px permet d'afficher les 7 boutons de l'onglet "Outils Avancés"
+$SplitContainer.IsSplitterFixed = $true  # Bloque le déplacement de la barre
 $Form.Controls.Add($SplitContainer)
 
 # --- Onglets ---
 $TabControl = New-Object System.Windows.Forms.TabControl
 $TabControl.Alignment = "Top"
 $TabControl.Multiline = $false 
-$TabControl.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+$TabControl.Font = New-Object System.Drawing.Font("Segoe UI Emoji", 10)
 $TabControl.Dock = [System.Windows.Forms.DockStyle]::Fill
 $SplitContainer.Panel1.Controls.Add($TabControl)
 
@@ -582,7 +639,7 @@ function Create-StackedTabButton {
     $Btn.Size = New-Object System.Drawing.Size(640, 45)
     $Y = 15 + ($Index * 55)
     $Btn.Location = New-Object System.Drawing.Point(20, $Y)
-    $Btn.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+    $Btn.Font = New-Object System.Drawing.Font("Segoe UI Emoji", 10, [System.Drawing.FontStyle]::Bold)
     $Btn.FlatStyle = "Flat"
     $Btn.FlatAppearance.BorderSize = 0
     $Btn.BackColor = $BgColor
@@ -600,7 +657,7 @@ $C_Net   = [System.Drawing.Color]::FromArgb(0, 150, 200)
 $C_Adv   = [System.Drawing.Color]::FromArgb(240, 200, 30)
 $C_Log   = [System.Drawing.Color]::FromArgb(100, 100, 100)
 
-# Group 1 - Système (6 boutons)
+# Group 1 - Système
 $BtnScan = Create-StackedTabButton -ParentTab $TabSys -Text "" -Index 0 -BgColor $C_Sys
 $BtnScan.Font = New-Object System.Drawing.Font("Segoe UI Emoji", 10, [System.Drawing.FontStyle]::bold)
 if (-not $IsAdmin) { $BtnScan.Enabled = $false }
@@ -617,7 +674,6 @@ $BtnSysRestore = Create-StackedTabButton -ParentTab $TabSys -Text "" -Index 3 -B
 $BtnSysRestore.Font = New-Object System.Drawing.Font("Segoe UI Emoji", 10, [System.Drawing.FontStyle]::bold)
 if (-not $IsAdmin) { $BtnSysRestore.Enabled = $false }
 
-# v0.14 : CHKDSK (nouveau, admin requis)
 $BtnChkdsk = Create-StackedTabButton -ParentTab $TabSys -Text "" -Index 4 -BgColor $C_Sys
 $BtnChkdsk.Font = New-Object System.Drawing.Font("Segoe UI Emoji", 10, [System.Drawing.FontStyle]::bold)
 if (-not $IsAdmin) { $BtnChkdsk.Enabled = $false }
@@ -625,6 +681,9 @@ if (-not $IsAdmin) { $BtnChkdsk.Enabled = $false }
 # Bouton log SFC (Masqué par défaut)
 $BtnViewSfcLog = Create-StackedTabButton -ParentTab $TabSys -Text "" -Index 5 -BgColor $C_Log
 $BtnViewSfcLog.Visible = $false
+
+$BtnRestorePoint = Create-StackedTabButton -ParentTab $TabSys -Text "" -Index 6 -BgColor $C_Log
+$BtnRestorePoint.Font = New-Object System.Drawing.Font("Segoe UI Emoji", 10, [System.Drawing.FontStyle]::bold)
 
 # Group 2 - Nettoyage (3 boutons)
 $BtnCleanMgr = Create-StackedTabButton -ParentTab $TabClean -Text "" -Index 0 -BgColor $C_Clean
@@ -635,7 +694,7 @@ if (-not $IsAdmin) { $BtnWinClean.Enabled = $false }
 
 $BtnOptDrive = Create-StackedTabButton -ParentTab $TabClean -Text "" -Index 2 -BgColor $C_Clean
 
-# v0.15 - Group Réseau & Internet (4 boutons : Winsock + TCP/IP + FlushDns déplacés depuis Nettoyage, + NetConn depuis Avancés)
+# Group Réseau & Internet (4 boutons)
 $BtnWinsock  = Create-StackedTabButton -ParentTab $TabNet -Text "" -Index 0 -BgColor $C_Net
 $BtnWinsock.Font = New-Object System.Drawing.Font("Segoe UI Emoji", 10, [System.Drawing.FontStyle]::bold)
 if (-not $IsAdmin) { $BtnWinsock.Enabled = $false }
@@ -645,9 +704,7 @@ $BtnIpReset.Font = New-Object System.Drawing.Font("Segoe UI Emoji", 10, [System.
 if (-not $IsAdmin) { $BtnIpReset.Enabled = $false }
 
 $BtnFlushDns = Create-StackedTabButton -ParentTab $TabNet -Text "" -Index 2 -BgColor $C_Net
-
 $BtnNetConn  = Create-StackedTabButton -ParentTab $TabNet -Text "" -Index 3 -BgColor $C_Net
-
 
 # Group 3 - Diagnostics (5 boutons)
 $BtnSysInfo  = Create-StackedTabButton -ParentTab $TabDiag -Text "" -Index 0 -BgColor $C_Diag
@@ -657,6 +714,7 @@ $BtnDxDiag   = Create-StackedTabButton -ParentTab $TabDiag -Text "" -Index 3 -Bg
 
 $BtnMemDiag  = Create-StackedTabButton -ParentTab $TabDiag -Text "" -Index 4 -BgColor $C_Diag
 $BtnMemDiag.Font = New-Object System.Drawing.Font("Segoe UI Emoji", 10, [System.Drawing.FontStyle]::bold)
+if (-not $IsAdmin) { $BtnMemDiag.Enabled = $false }
 
 # Group 4 - Performances (5 boutons)
 $BtnEventVwr = Create-StackedTabButton -ParentTab $TabPerf -Text "" -Index 0 -BgColor $C_Perf
@@ -675,17 +733,15 @@ $BtnMsConfig = Create-StackedTabButton -ParentTab $TabPerf -Text "" -Index 4 -Bg
 $BtnMsConfig.Font = New-Object System.Drawing.Font("Segoe UI Emoji", 10, [System.Drawing.FontStyle]::bold)
 if (-not $IsAdmin) { $BtnMsConfig.Enabled = $false }
 
-# Group 5 - Avancés (6 boutons : NetConn déplacé vers Réseau)
+# Group 5 - Avancés (6 boutons)
 $BtnFirewall = Create-StackedTabButton -ParentTab $TabAdv -Text "" -Index 0 -BgColor $C_Adv
 $BtnFirewall.Font = New-Object System.Drawing.Font("Segoe UI Emoji", 10, [System.Drawing.FontStyle]::bold)
 if (-not $IsAdmin) { $BtnFirewall.Enabled = $false }
 
-# v0.14 : Services (nouveau, admin requis)
 $BtnServices = Create-StackedTabButton -ParentTab $TabAdv -Text "" -Index 1 -BgColor $C_Adv
 $BtnServices.Font = New-Object System.Drawing.Font("Segoe UI Emoji", 10, [System.Drawing.FontStyle]::bold)
 if (-not $IsAdmin) { $BtnServices.Enabled = $false }
 
-# v0.14 : Gestion de l'ordinateur (nouveau, admin requis)
 $BtnCompMgmt = Create-StackedTabButton -ParentTab $TabAdv -Text "" -Index 2 -BgColor $C_Adv
 $BtnCompMgmt.Font = New-Object System.Drawing.Font("Segoe UI Emoji", 10, [System.Drawing.FontStyle]::bold)
 if (-not $IsAdmin) { $BtnCompMgmt.Enabled = $false }
@@ -739,40 +795,40 @@ function Update-InterfaceLanguage {
     $TabNet.Text           = $L.TabNet
     $TabAdv.Text           = $L.TabAdv
 
-    $BtnScan.Text          = $L.BtnScan + " 🛡️"
-    $BtnRestore.Text       = $L.BtnRestore + " 🛡️"
-    $BtnSfc.Text           = $L.BtnSfc + " 🛡️"
-    $BtnSysRestore.Text    = $L.BtnSysRestore + " 🛡️"
-    $BtnChkdsk.Text        = $L.BtnChkdsk + " 🛡️"
+    $BtnScan.Text          = $L.BtnScan + $(if (-not $IsAdmin) { " 🔒" } else { "" })
+    $BtnRestore.Text       = $L.BtnRestore + $(if (-not $IsAdmin) { " 🔒" } else { "" })
+    $BtnSfc.Text           = $L.BtnSfc + $(if (-not $IsAdmin) { " 🔒" } else { "" })
+    $BtnSysRestore.Text    = $L.BtnSysRestore + $(if (-not $IsAdmin) { " 🔒" } else { "" })
+    $BtnChkdsk.Text        = $L.BtnChkdsk + $(if (-not $IsAdmin) { " 🔒" } else { "" })
     $BtnViewSfcLog.Text    = $L.BtnSfcLog
+    $BtnRestorePoint.Text  = $L.BtnRestorePoint
     
     $BtnCleanMgr.Text      = $L.BtnCleanMgr
-    $BtnWinClean.Text      = $L.BtnWinClean + " 🛡️"
+    $BtnWinClean.Text      = $L.BtnWinClean + $(if (-not $IsAdmin) { " 🔒" } else { "" })
     $BtnOptDrive.Text      = $L.BtnOptDrive
     
-    $BtnWinsock.Text       = $L.BtnWinsock + $(if (-not $IsAdmin) { " 🔒" } else { " 🛡️" })
-    $BtnIpReset.Text       = $L.BtnIpReset + $(if (-not $IsAdmin) { " 🔒" } else { " 🛡️" })
+    $BtnWinsock.Text       = $L.BtnWinsock + $(if (-not $IsAdmin) { " 🔒" } else { "" })
+    $BtnIpReset.Text       = $L.BtnIpReset + $(if (-not $IsAdmin) { " 🔒" } else { "" })
     $BtnFlushDns.Text      = $L.BtnFlushDns
     
     $BtnSysInfo.Text       = $L.BtnSysInfo
     $BtnDevMgr.Text        = $L.BtnDevMgr
     $BtnDiskMgr.Text       = $L.BtnDiskMgr
     $BtnDxDiag.Text        = $L.BtnDxDiag
-    # v0.14 : MemDiagHint traduit au lieu de "(with reboot)" en dur
-    $BtnMemDiag.Text       = $L.BtnMemDiag + " $($L.MemDiagHint) 🛡️"
+    $BtnMemDiag.Text       = $L.BtnMemDiag + " $($L.MemDiagHint)" + $(if (-not $IsAdmin) { " 🔒" } else { "" })
     
     $BtnEventVwr.Text      = $L.BtnEventVwr
-    $BtnResMon.Text        = $L.BtnResMon
-    $BtnPerfDiag.Text      = $L.BtnPerfDiag + " 🛡️"
+    $BtnResMon.Text        = $L.BtnResMon + $(if (-not $IsAdmin) { " 🔒" } else { "" })
+    $BtnPerfDiag.Text      = $L.BtnPerfDiag + $(if (-not $IsAdmin) { " 🔒" } else { "" })
     $BtnReliability.Text   = $L.BtnReliability
-    $BtnMsConfig.Text      = $L.BtnMsConfig + " 🛡️"
+    $BtnMsConfig.Text      = $L.BtnMsConfig + $(if (-not $IsAdmin) { " 🔒" } else { "" })
 
-    $BtnFirewall.Text      = $L.BtnFirewall + " 🛡️"
-    $BtnServices.Text      = $L.BtnServices + " 🛡️"
-    $BtnCompMgmt.Text      = $L.BtnCompMgmt + " 🛡️"
+    $BtnFirewall.Text      = $L.BtnFirewall + $(if (-not $IsAdmin) { " 🔒" } else { "" })
+    $BtnServices.Text      = $L.BtnServices + $(if (-not $IsAdmin) { " 🔒" } else { "" })
+    $BtnCompMgmt.Text      = $L.BtnCompMgmt + $(if (-not $IsAdmin) { " 🔒" } else { "" })
     $BtnNetConn.Text       = $L.BtnNetConn
-    $BtnMRT.Text           = $L.BtnMRT + " 🛡️"
-    $BtnUserPass.Text      = $L.BtnUserPass + " 🛡️"
+    $BtnMRT.Text           = $L.BtnMRT + $(if (-not $IsAdmin) { " 🔒" } else { "" })
+    $BtnUserPass.Text      = $L.BtnUserPass + $(if (-not $IsAdmin) { " 🔒" } else { "" })
     $BtnPower.Text         = $L.BtnPower
 }
 
@@ -800,16 +856,65 @@ function Write-Log {
     }
 }
 
-# v0.14 : durcissement .msc/.cpl. On n'appelle plus directement devmgmt.msc
-# (qui repose sur ShellExecute / associations). À la place on invoque explicitement
-# l'hôte (mmc.exe pour les .msc, control.exe pour les .cpl) avec un chemin absolu
-# System32. Cela évite qu'un faux .msc plus tôt dans le PATH soit utilisé.
+function New-SystemRestorePoint {
+    $WindowsPowerShell = Join-Path $env:windir 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    if (-not (Test-Path -LiteralPath $WindowsPowerShell)) { return 'Failed' }
+
+    $Description = 'Windows Maintenance Hub - {0}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm')
+    $RestoreCommand = "try { Checkpoint-Computer -Description '$Description' -RestorePointType MODIFY_SETTINGS -ErrorAction Stop; exit 0 } catch { exit 1 }"
+    $EncodedRestoreCommand = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($RestoreCommand))
+
+    try {
+        $StartParameters = @{
+            FilePath = $WindowsPowerShell
+            ArgumentList = "-NoProfile -NonInteractive -EncodedCommand $EncodedRestoreCommand"
+            WindowStyle = 'Hidden'
+            Wait = $true
+            PassThru = $true
+            ErrorAction = 'Stop'
+        }
+        if (-not $IsAdmin) { $StartParameters.Verb = 'RunAs' }
+        $RestoreProcess = Start-Process @StartParameters
+        if ($RestoreProcess.ExitCode -eq 0) { return 'Created' }
+        return 'Failed'
+    } catch {
+        if ($_.Exception.NativeErrorCode -eq 1223) { return 'Cancelled' }
+        return 'Failed'
+    }
+}
+
+function Confirm-ActionWithRestorePoint {
+    param ([string]$Message)
+    if (-not (Confirm-Action $Message)) { return $false }
+
+    $L = $Translations[$Script:CurrentLang]
+    $RestoreResult = New-SystemRestorePoint
+    if ($RestoreResult -eq 'Created') {
+        Write-Log $L.RestorePointCreated
+        return $true
+    }
+    if ($RestoreResult -eq 'Cancelled') { return $false }
+
+    $Result = [System.Windows.Forms.MessageBox]::Show(
+        ($L.RestorePointFailed + "`n`n" + $L.MsgContinueWithoutRestorePoint),
+        $L.ConfTitle,
+        [System.Windows.Forms.MessageBoxButtons]::YesNo,
+        [System.Windows.Forms.MessageBoxIcon]::Warning,
+        [System.Windows.Forms.MessageBoxDefaultButton]::Button2
+    )
+    return ($Result -eq [System.Windows.Forms.DialogResult]::Yes)
+}
+
 function Resolve-SystemToolPath {
     param ([string]$Tool)
-    # Binaire natif dans System32 : on renvoie le chemin complet si présent
+    # Correction spécifique pour powershell.exe situé dans le sous-dossier v1.0
+    if ($Tool -eq 'powershell.exe') {
+        $psPath = Join-Path $env:windir 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        if (Test-Path -LiteralPath $psPath) { return $psPath }
+    }
     $sys32 = Join-Path $env:windir "System32\$Tool"
     if (Test-Path -LiteralPath $sys32) { return $sys32 }
-    return $Tool
+    return $null
 }
 
 function Invoke-NativeTool { 
@@ -821,23 +926,28 @@ function Invoke-NativeTool {
         $fileName = $Command
         $fileArgs = $Arguments
 
-        # v0.14 : .msc → mmc.exe "<chemin complet>"
         if ($Command -like '*.msc') {
             $mscPath = Resolve-SystemToolPath -Tool $Command
+            if (-not $mscPath) { throw "Console MMC introuvable dans System32 : $Command" }
             $fileName = Resolve-SystemToolPath -Tool 'mmc.exe'
+            if (-not $fileName) { throw 'mmc.exe introuvable dans System32.' }
             $fileArgs = "`"$mscPath`""
             if ($Arguments) { $fileArgs += " $Arguments" }
         }
-        # v0.14 : .cpl → control.exe "<chemin complet>"
         elseif ($Command -like '*.cpl') {
             $cplPath = Resolve-SystemToolPath -Tool $Command
+            if (-not $cplPath) { throw "Applet .cpl introuvable dans System32 : $Command" }
             $fileName = Resolve-SystemToolPath -Tool 'control.exe'
+            if (-not $fileName) { throw 'control.exe introuvable dans System32.' }
             $fileArgs = "`"$cplPath`""
             if ($Arguments) { $fileArgs += " $Arguments" }
         }
         else {
-            # Exécutable normal : résolution System32
             $fileName = Resolve-SystemToolPath -Tool $Command
+        }
+
+        if (-not $fileName) {
+            throw "Outil Windows introuvable dans System32 : $Command"
         }
 
         $StartInfo = New-Object System.Diagnostics.ProcessStartInfo
@@ -863,24 +973,39 @@ $BtnScan.Add_Click({
 })
 
 $BtnRestore.Add_Click({ 
-    if (Confirm-Action $Translations[$Script:CurrentLang].MsgRestore) { 
+    if (Confirm-ActionWithRestorePoint $Translations[$Script:CurrentLang].MsgRestore) { 
         Invoke-NativeTool "powershell.exe" "-NoProfile -NoExit -Command `"$ConsoleSetup DISM.exe /Online /Cleanup-image /Restorehealth`"" 
     } 
 })
 
-# v0.14 : SFC asynchrone — la fenêtre principale reste réactive pendant l'analyse.
-# On s'abonne à l'événement Exited du processus via Register-ObjectEvent.
+$Script:SfcTimer = New-Object System.Windows.Forms.Timer
+$Script:SfcTimer.Interval = 1000
+$Script:SfcTimer.Add_Tick({
+    if ($Script:SfcProc -and $Script:SfcProc.HasExited) {
+        $Script:SfcTimer.Stop()
+        $BtnSfc.Enabled = $true
+        Remove-Item Env:\WMH_SFC_REPORT_PATH -ErrorAction SilentlyContinue
+        if ((Test-Path -LiteralPath $Script:SfcReportPath) -and ((Get-Item -LiteralPath $Script:SfcReportPath).Length -gt 0)) {
+            $BtnViewSfcLog.Visible = $true
+            $L = $Translations[$Script:CurrentLang]
+            Write-Log ($L.SfcExtracted -replace '%LOGPATH%', $Script:SfcReportPath)
+        } else {
+            Write-Log $Translations[$Script:CurrentLang].SfcEmpty
+        }
+        $Script:SfcProc = $null
+    }
+})
+
 $BtnSfc.Add_Click({ 
-    # Réinitialiser l'état du bouton de log à chaque lancement
     $BtnViewSfcLog.Visible = $false
 
-    if (Confirm-Action $Translations[$Script:CurrentLang].MsgSfc) { 
+    if (Confirm-ActionWithRestorePoint $Translations[$Script:CurrentLang].MsgSfc) { 
         $L = $Translations[$Script:CurrentLang]
-        $SfcReportPath = Join-Path $env:TEMP "SFC_Details.txt"
+        $Script:SfcReportPath = Join-Path $env:TEMP ("WindowsMaintenanceHub_SFC_{0}.txt" -f [guid]::NewGuid().ToString('N'))
+        $env:WMH_SFC_REPORT_PATH = $Script:SfcReportPath
 
-        # Construction de la commande SFC + extraction du rapport dans %TEMP%
         $SfcCmd = "$ConsoleSetup sfc.exe /scannow; " +
-                  "`$LogPath = '$SfcReportPath'; " +
+                  "`$LogPath = `$env:WMH_SFC_REPORT_PATH; " +
                   "if (Test-Path `"`$env:windir`\Logs`\CBS`\CBS.log`") { " +
                   "  Write-Host 'Extraction du rapport SFC (peut prendre un moment)...' -ForegroundColor Cyan; " +
                   "  try { Select-String -Path `"`$env:windir`\Logs`\CBS`\CBS.log`" -Pattern '\[SR\]' -ErrorAction Stop | ForEach-Object { `$_.Line } | Set-Content -LiteralPath `$LogPath -Encoding UTF8; " +
@@ -891,41 +1016,35 @@ $BtnSfc.Add_Click({
         
         Write-Log $L.SfcRunning
 
-        # Lancement sans WaitForExit : la fenêtre principale reste utilisable
-        $SfcProc = Start-Process powershell -ArgumentList "-NoProfile -NoExit -Command `"$SfcCmd`"" -PassThru
-
-        # Détection asynchrone de la fin du processus
-        $SfcEventAction = {
-            $SfcReportPath = Join-Path $env:TEMP "SFC_Details.txt"
-            if ((Test-Path -LiteralPath $SfcReportPath) -and ((Get-Item -LiteralPath $SfcReportPath).Length -gt 0)) {
-                $BtnViewSfcLog.Visible = $true
-                $msg = $Translations[$Script:CurrentLang].SfcExtracted -replace '%LOGPATH%', $SfcReportPath
-            } else {
-                $msg = $Translations[$Script:CurrentLang].SfcEmpty
-            }
-            Write-Log $msg
+        try {
+            $BtnSfc.Enabled = $false
+            $SfcPowerShell = Resolve-SystemToolPath -Tool 'powershell.exe'
+            $SfcEncodedCommand = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($SfcCmd))
+            $Script:SfcProc = Start-Process -FilePath $SfcPowerShell -ArgumentList "-NoProfile -EncodedCommand $SfcEncodedCommand" -PassThru -ErrorAction Stop
+            $Script:SfcTimer.Start()
+        } catch {
+            $BtnSfc.Enabled = $true
+            Remove-Item Env:\WMH_SFC_REPORT_PATH -ErrorAction SilentlyContinue
+            $SfcError = $L.ToolNotFound -replace '%TOOL%', 'SFC / PowerShell'
+            Write-Log $SfcError
         }
-        # Register-ObjectEvent déclenche $SfcEventAction quand $SfcProc se termine
-        Register-ObjectEvent -InputObject $SfcProc -EventName Exited -Action $SfcEventAction | Out-Null
     } 
 })
 
 $BtnViewSfcLog.Add_Click({ 
-    $SfcReportPath = Join-Path $env:TEMP "SFC_Details.txt"
-    if (Test-Path -LiteralPath $SfcReportPath) {
-        Invoke-NativeTool "notepad.exe" "`"$SfcReportPath`""
+    if (Test-Path -LiteralPath $Script:SfcReportPath) {
+        Invoke-NativeTool "notepad.exe" "`"$Script:SfcReportPath`""
     } else {
         Write-Log $Translations[$Script:CurrentLang].SfcEmpty
     }
 })
 
 $BtnWinClean.Add_Click({ 
-    if (Confirm-Action $Translations[$Script:CurrentLang].MsgWinClean) { 
+    if (Confirm-ActionWithRestorePoint $Translations[$Script:CurrentLang].MsgWinClean) { 
         Invoke-NativeTool "powershell.exe" "-NoProfile -NoExit -Command `"$ConsoleSetup DISM.exe /Online /Cleanup-Image /StartComponentCleanup`"" 
     } 
 })
 
-# v0.14 : CHKDSK (nouveau) — vérifie le disque système C: dans une console admin.
 $BtnChkdsk.Add_Click({ 
     if (Confirm-Action $Translations[$Script:CurrentLang].MsgChkdsk) { 
         Invoke-NativeTool "powershell.exe" "-NoProfile -NoExit -Command `"$ConsoleSetup chkdsk.exe C: ; Write-Host '`r`nSi des erreurs ont ete detectees, relancez avec : chkdsk C: /F /R' -ForegroundColor Yellow; Write-Host '⚠️ Une analyse au prochain redemarrage peut etre planifiee.' -ForegroundColor Cyan`"" 
@@ -933,13 +1052,13 @@ $BtnChkdsk.Add_Click({
 })
 
 $BtnWinsock.Add_Click({ 
-    if (Confirm-Action $Translations[$Script:CurrentLang].MsgWinsock) { 
+    if (Confirm-ActionWithRestorePoint $Translations[$Script:CurrentLang].MsgWinsock) { 
         Invoke-NativeTool "powershell.exe" "-NoProfile -NoExit -Command `"$ConsoleSetup netsh winsock reset; Write-Host '`r`nCatalogue Winsock reinitialise.' -ForegroundColor Green; Write-Host '⚠️ Redemarrage du PC requis.' -ForegroundColor Red`"" 
     } 
 })
 
 $BtnIpReset.Add_Click({ 
-    if (Confirm-Action $Translations[$Script:CurrentLang].MsgIpReset) { 
+    if (Confirm-ActionWithRestorePoint $Translations[$Script:CurrentLang].MsgIpReset) { 
         Invoke-NativeTool "powershell.exe" "-NoProfile -NoExit -Command `"$ConsoleSetup netsh int ip reset; Write-Host '`r`nProtocole TCP/IP reinitialise.' -ForegroundColor Green; Write-Host '⚠️ Redemarrage du PC requis.' -ForegroundColor Red`"" 
     } 
 })
@@ -952,6 +1071,17 @@ $BtnFlushDns.Add_Click({
 
 # Outils natifs système Windows
 $BtnSysRestore.Add_Click({ if (Confirm-Action $Translations[$Script:CurrentLang].MsgSysRestore) { Invoke-NativeTool "SystemPropertiesProtection.exe" "" } })
+$BtnRestorePoint.Add_Click({
+    $L = $Translations[$Script:CurrentLang]
+    if (Confirm-Action $L.MsgRestorePoint) {
+        $RestoreResult = New-SystemRestorePoint
+        if ($RestoreResult -eq 'Created') {
+            Write-Log $L.RestorePointCreated
+        } elseif ($RestoreResult -eq 'Failed') {
+            [void][System.Windows.Forms.MessageBox]::Show($L.RestorePointFailed, $L.ConfTitle, [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+        }
+    }
+})
 $BtnCleanMgr.Add_Click({ if (Confirm-Action $Translations[$Script:CurrentLang].MsgCleanMgr) { Invoke-NativeTool "cleanmgr.exe" "" } })
 
 $BtnOptDrive.Add_Click({ if (Confirm-Action $Translations[$Script:CurrentLang].MsgOptDrive) { Invoke-NativeTool "dfrgui.exe" "" } })
@@ -968,10 +1098,7 @@ $BtnMsConfig.Add_Click({ if (Confirm-Action $Translations[$Script:CurrentLang].M
 $BtnFirewall.Add_Click({ if (Confirm-Action $Translations[$Script:CurrentLang].MsgFirewall) { Invoke-NativeTool "wf.msc" "" } })
 $BtnNetConn.Add_Click({ if (Confirm-Action $Translations[$Script:CurrentLang].MsgNetConn) { Invoke-NativeTool "ncpa.cpl" "" } })
 
-# v0.14 : Services (nouveau) — console des services Windows.
 $BtnServices.Add_Click({ if (Confirm-Action $Translations[$Script:CurrentLang].MsgServices) { Invoke-NativeTool "services.msc" "" } })
-
-# v0.14 : Gestion de l'ordinateur (nouveau) — console tout-en-un.
 $BtnCompMgmt.Add_Click({ if (Confirm-Action $Translations[$Script:CurrentLang].MsgCompMgmt) { Invoke-NativeTool "compmgmt.msc" "" } })
 
 $BtnMRT.Add_Click({ if (Confirm-Action $Translations[$Script:CurrentLang].MsgMRT) { Invoke-NativeTool "mrt.exe" "" } })
@@ -993,4 +1120,6 @@ $Form.Add_FormClosing({
 # Onglet sélectionné par défaut à l'ouverture
 $TabControl.SelectedTab = $TabDiag
 
+Write-StartupLog "UI initialized; IsAdmin=$IsAdmin; language=$Script:CurrentLang"
 [void]$Form.ShowDialog()
+Write-StartupLog 'Main window closed normally.'
